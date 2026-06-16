@@ -1,14 +1,57 @@
-*.tar
-*.tar.*
-*.jar
-*.exe
-*.msi
-*.deb
-*.zip
-*.tgz
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Turbo
+.turbo/
+
+# Vite
+*.local
+
+# TypeScript
+*.tsbuildinfo
+
+# Logs
+logs/
 *.log
 *.log.*
-*.sig
+npm-debug.log*
+pnpm-debug.log*
 
-pkg/
-src/
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Uploads (runtime data, not source)
+uploads/*
+!uploads/.gitkeep
+
+# Docker
+docker-compose.override.yml
+
+# Database
+*.sqlite
+*.sqlite3
+infrastructure/database/backups/*
+!infrastructure/database/backups/.gitkeep
