@@ -9,8 +9,19 @@ export default function RegisterPage() {
   const cpwField = usePasswordVisibility();
 
   async function handleSuccess(data: RegisterFormData) {
-    // Replace with actual API call to POST /api/auth/register
-    console.log("Register payload:", data);
+    const response = await fetch(
+      "http://localhost:3000/register",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(data),
+      }
+    );
+
+    const result = await response.json();
+    console.log(result);
   }
 
   const { form, errors, submitting, handleChange, handleSubmit } =
