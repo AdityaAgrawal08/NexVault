@@ -5,7 +5,7 @@ type FieldErrors = Partial<Record<keyof LoginFormData, string>>;
 
 const INITIAL: LoginFormData = { identifier: "", password: "" };
 
-export function useLoginForm(onSuccess: (data: LoginFormData) => void) {
+export function useLoginForm(onSuccess: (data: LoginFormData) => Promise<void>) {
   const [form, setForm] = useState<LoginFormData>(INITIAL);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [submitting, setSubmitting] = useState(false);
