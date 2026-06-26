@@ -2,21 +2,22 @@
   "compilerOptions": {
     "target": "ES2020",
     "module": "CommonJS",
-    "lib": [
-      "ES2020"
-    ],
-    "outDir": "dist",
+    "moduleResolution": "Node",
     "rootDir": "src",
+    "outDir": "dist",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "types": [
+      "node"
+    ]
   },
   "include": [
     "src"
   ],
   "exclude": [
-    "node_modules",
-    "dist"
+    "dist",
+    "node_modules"
   ]
 }
