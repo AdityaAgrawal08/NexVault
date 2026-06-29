@@ -1,4 +1,5 @@
-import { Link } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { useRegisterForm } from "../hooks/useRegisterForm";
 import { usePasswordVisibility } from "@/shared/hooks/usePasswordVisibility";
 import PasswordStrengthBar from "@/shared/components/PasswordStrengthBar";
@@ -7,6 +8,10 @@ import type { RegisterFormData } from "@/shared/types/auth.types";
 export default function RegisterPage() {
   const pwField = usePasswordVisibility();
   const cpwField = usePasswordVisibility();
+  const navigate = useNavigate();
+
+  const [usernameStatus, setUsernameStatus] = useState<"idle" | "checking" | "available" | "taken" | "invalid">("idle");
+  const [usernameMessage, setUsernameMessage] = useState("");
 
   async function handleSuccess(data: RegisterFormData) {
     const response = await fetch(
@@ -21,11 +26,76 @@ export default function RegisterPage() {
     );
 
     const result = await response.json();
-    console.log(result);
+    if (!response.ok) {
+      if (result.errors) {
+        const formErrors: any = {};
+        for (const key of Object.keys(result.errors)) {
+          formErrors[key] = Array.isArray(result.errors[key])
+            ? result.errors[key][0]
+            : result.errors[key];
+        }
+        setErrors(formErrors);
+      }
+      throw new Error(result.message || "Registration failed.");
+    }
+
+    navigate("/login", { state: { message: "Registration successful! Please log in." } });
   }
 
-  const { form, errors, submitting, handleChange, handleSubmit } =
+  const { form, errors, setErrors, submitError, submitting, handleChange, handleSubmit } =
     useRegisterForm(handleSuccess);
+
+  useEffect(() => {
+    const username = form.username.trim();
+    if (!username) {
+      setUsernameStatus("idle");
+      setUsernameMessage("");
+      return;
+    }
+
+    if (username.length < 3) {
+      setUsernameStatus("invalid");
+      setUsernameMessage("Username must be at least 3 characters.");
+      return;
+    }
+
+    if (username.length > 32) {
+      setUsernameStatus("invalid");
+      setUsernameMessage("Username must not exceed 32 characters.");
+      return;
+    }
+
+    if (!/^[A-Za-z0-9_]+$/.test(username)) {
+      setUsernameStatus("invalid");
+      setUsernameMessage("Username can only contain letters, numbers, and underscores.");
+      return;
+    }
+
+    setUsernameStatus("checking");
+    setUsernameMessage("");
+
+    const delayDebounce = setTimeout(async () => {
+      try {
+        const response = await fetch(
+          `http://localhost:3000/check-username?username=${encodeURIComponent(username)}`
+        );
+        const result = await response.json();
+        if (result.available) {
+          setUsernameStatus("available");
+          setUsernameMessage("Username is available!");
+        } else {
+          setUsernameStatus("taken");
+          setUsernameMessage(result.message || "Username is already taken.");
+        }
+      } catch (err) {
+        console.error("Error checking username availability:", err);
+        setUsernameStatus("idle");
+        setUsernameMessage("");
+      }
+    }, 500);
+
+    return () => clearTimeout(delayDebounce);
+  }, [form.username]);
 
   return (
     <div className="page-center">
@@ -37,21 +107,45 @@ export default function RegisterPage() {
 
         <h1 className="card-title">Create your account</h1>
 
+        {submitError && (
+          <div className="form-error" role="alert">
+            {submitError}
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} noValidate>
           <div className="field">
             <label htmlFor="username">Username</label>
-            <input
-              id="username"
-              name="username"
-              type="text"
-              autoComplete="username"
-              value={form.username}
-              onChange={handleChange}
-              placeholder="e.g. john_doe"
-              aria-describedby={errors.username ? "username-err" : undefined}
-            />
+            <div style={{ position: "relative" }}>
+              <input
+                id="username"
+                name="username"
+                type="text"
+                autoComplete="username"
+                value={form.username}
+                onChange={handleChange}
+                placeholder="e.g. john_doe"
+                aria-describedby={errors.username ? "username-err" : undefined}
+                className={
+                  usernameStatus === "available"
+                    ? "input-success"
+                    : usernameStatus === "taken" || usernameStatus === "invalid"
+                    ? "input-error"
+                    : ""
+                }
+              />
+              {usernameStatus === "checking" && (
+                <span className="input-spinner" style={{ position: "absolute", right: "12px", top: "50%", transform: "translateY(-50%)" }}>⏳</span>
+              )}
+            </div>
+            {usernameMessage && (
+              <span className={`availability-indicator ${usernameStatus}`} style={{ display: "block", marginTop: "4px" }}>
+                {usernameStatus === "available" ? "✓ " : "✗ "}
+                {usernameMessage}
+              </span>
+            )}
             {errors.username && (
-              <span className="field-error" id="username-err" role="alert">
+              <span className="field-error" id="username-err" role="alert" style={{ display: "block", marginTop: "4px" }}>
                 {errors.username}
               </span>
             )}

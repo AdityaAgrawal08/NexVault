@@ -1,17 +1,48 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useLoginForm } from "../hooks/useLoginForm";
 import { usePasswordVisibility } from "@/shared/hooks/usePasswordVisibility";
 import type { LoginFormData } from "@/shared/types/auth.types";
 
 export default function LoginPage() {
   const pwField = usePasswordVisibility();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const successMessage = location.state?.message;
 
   async function handleSuccess(data: LoginFormData) {
-    // Replace with actual API call to POST /api/auth/login
-    console.log("Login payload:", data);
+    const response = await fetch(
+      "http://localhost:3000/login",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(data),
+      }
+    );
+
+    const result = await response.json();
+    if (!response.ok) {
+      if (result.errors) {
+        const formErrors: any = {};
+        for (const key of Object.keys(result.errors)) {
+          formErrors[key] = Array.isArray(result.errors[key])
+            ? result.errors[key][0]
+            : result.errors[key];
+        }
+        setErrors(formErrors);
+      }
+      throw new Error(result.message || "Invalid credentials.");
+    }
+
+    // Save user details to localStorage
+    localStorage.setItem("user", JSON.stringify(result.data));
+
+    // Redirect to profile
+    navigate("/profile");
   }
 
-  const { form, errors, submitting, handleChange, handleSubmit } =
+  const { form, errors, setErrors, submitError, submitting, handleChange, handleSubmit } =
     useLoginForm(handleSuccess);
 
   return (
@@ -23,6 +54,26 @@ export default function LoginPage() {
         </div>
 
         <h1 className="card-title">Log in</h1>
+
+        {successMessage && (
+          <div className="form-success" role="alert" style={{
+            backgroundColor: "rgba(16, 185, 129, 0.1)",
+            border: "1px solid var(--color-success)",
+            color: "var(--color-success)",
+            padding: "0.75rem 1rem",
+            borderRadius: "var(--radius)",
+            fontSize: "14px",
+            marginBottom: "1rem"
+          }}>
+            {successMessage}
+          </div>
+        )}
+
+        {submitError && (
+          <div className="form-error" role="alert">
+            {submitError}
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} noValidate>
           <div className="field">

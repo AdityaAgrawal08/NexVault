@@ -43,6 +43,7 @@ export type AuthenticatedUser = {
   id: string;
   username: string;
   email: string;
+  phoneNumber: string;
 };
 
 export type LoginResult = {

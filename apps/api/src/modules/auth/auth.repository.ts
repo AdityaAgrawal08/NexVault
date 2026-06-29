@@ -130,7 +130,7 @@ export class AuthRepository {
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM users
-        WHERE email = $1
+        WHERE LOWER(email) = LOWER($1)
         LIMIT 1
       `,
       [email],
@@ -159,7 +159,7 @@ export class AuthRepository {
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM users
-        WHERE username = $1
+        WHERE LOWER(username) = LOWER($1)
         LIMIT 1
       `,
       [username],
@@ -173,6 +173,43 @@ export class AuthRepository {
 
     return user;
   }
+
+  public async findUserByPhone(
+    phoneNumber: string,
+  ): Promise<UserRecord> {
+    const { rows } = await db.query<UserRecord>(
+      `
+        SELECT
+          id,
+          username,
+          email,
+          phone_number AS "phoneNumber",
+          password AS "passwordHash",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM users
+        WHERE phone_number = $1
+        LIMIT 1
+      `,
+      [phoneNumber],
+    );
+
+    const user = rows[0];
+
+    if (!user) {
+      throw new UserNotFoundError();
+    }
+
+    return user;
+  }
+
+  public async getAllUsernames(): Promise<string[]> {
+    const { rows } = await db.query<{ username: string }>(
+      `SELECT username FROM users`
+    );
+    return rows.map((row) => row.username);
+  }
 }
 
 export const authRepository = new AuthRepository();
+

@@ -4,6 +4,11 @@ import { authController } from "./auth.controller";
 
 const router = Router();
 
+router.get(
+  "/check-username",
+  authController.checkUsername.bind(authController),
+);
+
 router.post(
   "/register",
   authController.register.bind(authController),

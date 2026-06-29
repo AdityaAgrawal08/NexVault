@@ -8,6 +8,7 @@ const INITIAL: LoginFormData = { identifier: "", password: "" };
 export function useLoginForm(onSuccess: (data: LoginFormData) => Promise<void>) {
   const [form, setForm] = useState<LoginFormData>(INITIAL);
   const [errors, setErrors] = useState<FieldErrors>({});
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   function handleChange(e: ChangeEvent<HTMLInputElement>) {
@@ -31,12 +32,15 @@ export function useLoginForm(onSuccess: (data: LoginFormData) => Promise<void>) 
       return;
     }
     setSubmitting(true);
+    setSubmitError(null);
     try {
       await onSuccess(form);
+    } catch (err: any) {
+      setSubmitError(err.message || "An unexpected error occurred.");
     } finally {
       setSubmitting(false);
     }
   }
 
-  return { form, errors, submitting, handleChange, handleSubmit };
+  return { form, errors, setErrors, submitError, setSubmitError, submitting, handleChange, handleSubmit };
 }

@@ -13,9 +13,10 @@ const INITIAL: RegisterFormData = {
   confirmPassword: "",
 };
 
-export function useRegisterForm(onSuccess: (data: RegisterFormData) => void) {
+export function useRegisterForm(onSuccess: (data: RegisterFormData) => Promise<void>) {
   const [form, setForm] = useState<RegisterFormData>(INITIAL);
   const [errors, setErrors] = useState<FieldErrors>({});
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   function handleChange(e: ChangeEvent<HTMLInputElement>) {
@@ -55,13 +56,17 @@ export function useRegisterForm(onSuccess: (data: RegisterFormData) => void) {
       return;
     }
     setSubmitting(true);
+    setSubmitError(null);
     try {
       // Hand off to caller — API wiring lives in the page/service layer
       await onSuccess(form);
+    } catch (err: any) {
+      setSubmitError(err.message || "An unexpected error occurred.");
     } finally {
       setSubmitting(false);
     }
   }
 
-  return { form, errors, submitting, handleChange, handleSubmit };
+  return { form, errors, setErrors, submitError, setSubmitError, submitting, handleChange, handleSubmit };
 }
+
