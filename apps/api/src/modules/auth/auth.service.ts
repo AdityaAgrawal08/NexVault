@@ -7,6 +7,15 @@ import { authRepository } from "./auth.repository";
 import { usernameBloomFilter } from "./username-bloom-filter";
 
 import {
+  generateAccessToken,
+  generateRefreshToken,
+  verifyRefreshToken,
+  RefreshTokenPayload,
+} from "../../core/security/jwt";
+
+import { AppError } from "../../shared/errors/app-error";
+
+import {
   InvalidCredentialsError,
   UserAlreadyExistsError,
   UserNotFoundError,
@@ -18,6 +27,7 @@ import type {
   LoginRequest,
   RegisterUserRequest,
   RegisterUserResponse,
+  LoginResult,
 } from "./auth.types";
 
 class AuthService {
@@ -70,7 +80,7 @@ class AuthService {
 
   public async login(
     input: LoginRequest,
-  ): Promise<AuthenticatedUser> {
+  ): Promise<LoginResult> {
     const user = input.identifier.includes("@")
       ? await authRepository.findUserByEmail(input.identifier)
       : await authRepository.findUserByUsername(input.identifier);
@@ -84,14 +94,130 @@ class AuthService {
       throw new InvalidCredentialsError();
     }
 
-    return {
+    const authenticatedUser: AuthenticatedUser = {
       id: user.id,
       username: user.username,
       email: user.email,
       phoneNumber: user.phoneNumber,
     };
+
+    // Generate access token
+    const accessToken = generateAccessToken({
+      userId: user.id,
+      username: user.username,
+      email: user.email,
+    });
+
+    // Generate refresh token (valid for 7 days)
+    const refreshExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const dbToken = await authRepository.createRefreshToken(user.id, refreshExpiresAt);
+
+    const refreshToken = generateRefreshToken({
+      userId: user.id,
+      tokenId: dbToken.id,
+    });
+
+    return {
+      user: authenticatedUser,
+      accessToken,
+      refreshToken,
+    };
+  }
+
+  public async refresh(
+    refreshToken: string,
+  ): Promise<LoginResult> {
+    let payload: RefreshTokenPayload;
+    try {
+      payload = verifyRefreshToken(refreshToken);
+    } catch (err) {
+      throw new AppError({
+        message: "Invalid or expired refresh token.",
+        statusCode: 401,
+        code: "AUTH_REFRESH_TOKEN_INVALID",
+      });
+    }
+
+    const tokenRecord = await authRepository.findRefreshTokenById(payload.tokenId);
+
+    if (!tokenRecord) {
+      throw new AppError({
+        message: "Refresh token not found.",
+        statusCode: 401,
+        code: "AUTH_REFRESH_TOKEN_NOT_FOUND",
+      });
+    }
+
+    // Reuse detection
+    if (tokenRecord.isRevoked) {
+      if (tokenRecord.replacedBy) {
+        // Revoke all tokens for this user
+        await authRepository.revokeAllUserRefreshTokens(tokenRecord.userId);
+        throw new AppError({
+          message: "Refresh token reuse detected. All sessions revoked.",
+          statusCode: 401,
+          code: "AUTH_REFRESH_TOKEN_REUSE",
+        });
+      }
+
+      throw new AppError({
+        message: "Refresh token has been revoked.",
+        statusCode: 401,
+        code: "AUTH_REFRESH_TOKEN_REVOKED",
+      });
+    }
+
+    if (new Date() > new Date(tokenRecord.expiresAt)) {
+      throw new AppError({
+        message: "Refresh token has expired.",
+        statusCode: 401,
+        code: "AUTH_REFRESH_TOKEN_EXPIRED",
+      });
+    }
+
+    const user = await authRepository.findUserById(tokenRecord.userId);
+
+    // Rotate the refresh token
+    const refreshExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const newToken = await authRepository.replaceRefreshToken(
+      tokenRecord.id,
+      user.id,
+      refreshExpiresAt
+    );
+
+    const newAccessToken = generateAccessToken({
+      userId: user.id,
+      username: user.username,
+      email: user.email,
+    });
+
+    const newRefreshToken = generateRefreshToken({
+      userId: user.id,
+      tokenId: newToken.id,
+    });
+
+    return {
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        phoneNumber: user.phoneNumber,
+      },
+      accessToken: newAccessToken,
+      refreshToken: newRefreshToken,
+    };
+  }
+
+  public async logout(refreshToken: string): Promise<void> {
+    try {
+      const payload = verifyRefreshToken(refreshToken);
+      await authRepository.revokeRefreshToken(payload.tokenId);
+    } catch (err) {
+      // If token is invalid/expired, it's already cleared
+    }
   }
 }
 
 export const authService = new AuthService();
+
 

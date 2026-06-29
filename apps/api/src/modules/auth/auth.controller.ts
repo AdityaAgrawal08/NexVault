@@ -9,6 +9,19 @@ import { authService } from "./auth.service";
 import { usernameBloomFilter } from "./username-bloom-filter";
 import { authRepository } from "./auth.repository";
 
+const COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env["NODE_ENV"] === "production",
+  sameSite: "lax" as const,
+  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+};
+
+const CLEAR_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env["NODE_ENV"] === "production",
+  sameSite: "lax" as const,
+};
+
 class AuthController {
   public checkUsername = asyncHandler(async (
     req: Request,
@@ -73,7 +86,7 @@ class AuthController {
 
     const user = await authService.register(result.data);
 
-    res
+    return res
       .status(201)
       .location(`/users/${user.id}`)
       .json({
@@ -86,14 +99,62 @@ class AuthController {
     req: Request,
     res: Response,
   ) => {
-    const user = await authService.login(req.body);
+    const result = await authService.login(req.body);
 
-    res.status(200).json({
+    res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
+
+    return res.status(200).json({
       message: "Login successful.",
-      data: user,
+      data: {
+        user: result.user,
+        accessToken: result.accessToken,
+      },
+    });
+  });
+
+  public refresh = asyncHandler(async (
+    req: Request,
+    res: Response,
+  ) => {
+    const cookies = req.cookies as Record<string, string | undefined>;
+    const token = cookies["refreshToken"];
+
+    if (!token) {
+      return res.status(401).json({
+        message: "Refresh token missing.",
+      });
+    }
+
+    const result = await authService.refresh(token);
+
+    res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
+
+    return res.status(200).json({
+      message: "Token refreshed successfully.",
+      data: {
+        user: result.user,
+        accessToken: result.accessToken,
+      },
+    });
+  });
+
+  public logout = asyncHandler(async (
+    req: Request,
+    res: Response,
+  ) => {
+    const cookies = req.cookies as Record<string, string | undefined>;
+    const token = cookies["refreshToken"];
+
+    if (token) {
+      await authService.logout(token);
+    }
+
+    res.clearCookie("refreshToken", CLEAR_COOKIE_OPTIONS);
+
+    return res.status(200).json({
+      message: "Logged out successfully.",
     });
   });
 }
 
 export const authController = new AuthController();
-

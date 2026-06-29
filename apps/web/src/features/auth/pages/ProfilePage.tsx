@@ -1,4 +1,5 @@
 import { useNavigate, Navigate } from "react-router-dom";
+import { apiRequest, clearSession } from "@/shared/utils/apiClient";
 
 interface UserSession {
   id: string;
@@ -19,13 +20,21 @@ export default function ProfilePage() {
   try {
     user = JSON.parse(userJson);
   } catch (err) {
-    localStorage.removeItem("user");
+    clearSession();
     return <Navigate to="/login" replace />;
   }
 
-  function handleLogout() {
-    localStorage.removeItem("user");
-    navigate("/login");
+  async function handleLogout() {
+    try {
+      await apiRequest("http://localhost:3000/logout", {
+        method: "POST",
+      });
+    } catch (err) {
+      console.error("Logout error:", err);
+    } finally {
+      clearSession();
+      navigate("/login");
+    }
   }
 
   return (

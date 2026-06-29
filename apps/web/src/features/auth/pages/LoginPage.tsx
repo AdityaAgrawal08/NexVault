@@ -2,6 +2,7 @@ import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useLoginForm } from "../hooks/useLoginForm";
 import { usePasswordVisibility } from "@/shared/hooks/usePasswordVisibility";
 import type { LoginFormData } from "@/shared/types/auth.types";
+import { apiRequest, setAccessToken } from "@/shared/utils/apiClient";
 
 export default function LoginPage() {
   const pwField = usePasswordVisibility();
@@ -10,36 +11,27 @@ export default function LoginPage() {
   const successMessage = location.state?.message;
 
   async function handleSuccess(data: LoginFormData) {
-    const response = await fetch(
-      "http://localhost:3000/login",
-      {
+    try {
+      const result = await apiRequest("http://localhost:3000/login", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
         body: JSON.stringify(data),
-      }
-    );
+      });
 
-    const result = await response.json();
-    if (!response.ok) {
-      if (result.errors) {
+      setAccessToken(result.data.accessToken);
+      localStorage.setItem("user", JSON.stringify(result.data.user));
+      navigate("/profile");
+    } catch (err: any) {
+      if (err.errors) {
         const formErrors: any = {};
-        for (const key of Object.keys(result.errors)) {
-          formErrors[key] = Array.isArray(result.errors[key])
-            ? result.errors[key][0]
-            : result.errors[key];
+        for (const key of Object.keys(err.errors)) {
+          formErrors[key] = Array.isArray(err.errors[key])
+            ? err.errors[key][0]
+            : err.errors[key];
         }
         setErrors(formErrors);
       }
-      throw new Error(result.message || "Invalid credentials.");
+      throw err;
     }
-
-    // Save user details to localStorage
-    localStorage.setItem("user", JSON.stringify(result.data));
-
-    // Redirect to profile
-    navigate("/profile");
   }
 
   const { form, errors, setErrors, submitError, submitting, handleChange, handleSubmit } =

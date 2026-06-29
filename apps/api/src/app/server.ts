@@ -3,6 +3,7 @@ dotenv.config();
 
 import { app } from "./app";
 import { initializeUsernameBloomFilter } from "../modules/auth/username-bloom-filter";
+import { initializeDatabase } from "../core/database/init";
 
 const port = Number(process.env.PORT);
 
@@ -11,6 +12,7 @@ if (!Number.isInteger(port)) {
 }
 
 async function startServer() {
+  await initializeDatabase();
   await initializeUsernameBloomFilter();
 
   app.listen(port, () => {
