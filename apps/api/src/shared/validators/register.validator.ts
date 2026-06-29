@@ -68,14 +68,38 @@ export const registerSchema = z
         PASSWORD_MAX_LENGTH,
         `Password must not exceed ${PASSWORD_MAX_LENGTH} characters.`,
       )
-      .regex(/[a-z]/, "Password must contain at least one lowercase letter.")
-      .regex(/[A-Z]/, "Password must contain at least one uppercase letter.")
-      .regex(/\d/, "Password must contain at least one digit.")
+      .regex(
+        /[a-z]/,
+        "Password must contain at least one lowercase letter.",
+      )
+      .regex(
+        /[A-Z]/,
+        "Password must contain at least one uppercase letter.",
+      )
+      .regex(
+        /\d/,
+        "Password must contain at least one digit.",
+      )
       .regex(
         /[^A-Za-z0-9]/,
         "Password must contain at least one special character.",
       ),
+
+    confirmPassword: z
+      .string()
+      .overwrite(normalize)
+      .min(1, "Please confirm your password."),
   })
-  .strict();
+  .strict()
+  .superRefine(({ password, confirmPassword }, ctx) => {
+    if (password !== confirmPassword) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["confirmPassword"],
+        message: "Passwords do not match.",
+      });
+    }
+  })
+  .transform(({ confirmPassword, ...data }) => data);
 
 export type RegisterRequest = z.infer<typeof registerSchema>;
