@@ -1,6 +1,4 @@
-import type {
-  ErrorRequestHandler,
-} from "express";
+import type { ErrorRequestHandler } from "express";
 
 import { ZodError } from "zod";
 
@@ -15,7 +13,7 @@ export const errorMiddleware: ErrorRequestHandler = (
   if (error instanceof ZodError) {
     return res.status(400).json({
       message: "Validation failed.",
-      errors: error.flatten(),
+      errors: error.flatten().fieldErrors,
     });
   }
 
@@ -23,6 +21,9 @@ export const errorMiddleware: ErrorRequestHandler = (
     return res.status(error.statusCode).json({
       message: error.message,
       code: error.code,
+      ...(error.errors && {
+        errors: error.errors,
+      }),
     });
   }
 

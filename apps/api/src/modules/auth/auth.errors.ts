@@ -6,6 +6,9 @@ export class UserAlreadyExistsError extends AppError {
       message: `${field} already exists.`,
       statusCode: 409,
       code: "AUTH_USER_ALREADY_EXISTS",
+      errors: {
+        [field]: [`${field} already exists.`],
+      },
     });
   }
 }
@@ -23,9 +26,14 @@ export class UserNotFoundError extends AppError {
 export class InvalidCredentialsError extends AppError {
   constructor() {
     super({
-      message: "Invalid credentials.",
+      message: "Invalid email or password.",
       statusCode: 401,
       code: "AUTH_INVALID_CREDENTIALS",
+      errors: {
+        identifier: [
+          "Invalid email or password.",
+        ],
+      },
     });
   }
 }
