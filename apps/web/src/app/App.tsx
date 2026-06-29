@@ -3,6 +3,9 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import RegisterPage from "@/features/auth/pages/RegisterPage";
 import LoginPage from "@/features/auth/pages/LoginPage";
 import ProfilePage from "@/features/auth/pages/ProfilePage";
+import ForgotPasswordPage from "@/features/auth/pages/ForgotPasswordPage";
+import ResetPasswordPage from "@/features/auth/pages/ResetPasswordPage";
+import VerifyAccountPage from "@/features/auth/pages/VerifyAccountPage";
 import { apiRequest, setAccessToken } from "@/shared/utils/apiClient";
 
 export default function App() {
@@ -17,7 +20,7 @@ export default function App() {
       }
 
       try {
-        const result = await apiRequest("http://localhost:3000/refresh", {
+        const result = await apiRequest("/refresh", {
           method: "POST",
         });
         setAccessToken(result.data.accessToken);
@@ -48,6 +51,9 @@ export default function App() {
       <Route path="/register" element={<RegisterPage />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/profile" element={<ProfilePage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Route path="/verify-account" element={<VerifyAccountPage />} />
     </Routes>
   );
 }

@@ -22,6 +22,9 @@ export type UserRecord = {
   email: string;
   phoneNumber: string;
   passwordHash: string;
+  isVerified: boolean;
+  twoFactorSecret: string | null;
+  twoFactorEnabled: boolean;
   createdAt: Date;
   updatedAt: Date;
 };

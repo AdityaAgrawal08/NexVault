@@ -6,7 +6,12 @@ import { errorMiddleware } from "../shared/middleware/error.middleware";
 
 export const app = express();
 
-app.use(cors());
+app.use(
+  cors({
+    origin: ["http://localhost:3001", "http://localhost:5173", "http://localhost:3000"],
+    credentials: true,
+  })
+);
 app.use(cookieParser());
 app.use(express.json());
 // Why use express.json because without it : { username: "user"} arrives as undefined and with it req.body.username works

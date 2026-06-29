@@ -42,13 +42,15 @@ export class AuthRepository {
             username,
             email,
             phone_number,
-            password
+            password,
+            is_verified
           )
           VALUES (
             $1,
             $2,
             $3,
-            $4
+            $4,
+            FALSE
           )
           RETURNING
             id,
@@ -109,6 +111,9 @@ export class AuthRepository {
           email,
           phone_number AS "phoneNumber",
           password AS "passwordHash",
+          is_verified AS "isVerified",
+          two_factor_secret AS "twoFactorSecret",
+          two_factor_enabled AS "twoFactorEnabled",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM users
@@ -138,6 +143,9 @@ export class AuthRepository {
           email,
           phone_number AS "phoneNumber",
           password AS "passwordHash",
+          is_verified AS "isVerified",
+          two_factor_secret AS "twoFactorSecret",
+          two_factor_enabled AS "twoFactorEnabled",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM users
@@ -167,6 +175,9 @@ export class AuthRepository {
           email,
           phone_number AS "phoneNumber",
           password AS "passwordHash",
+          is_verified AS "isVerified",
+          two_factor_secret AS "twoFactorSecret",
+          two_factor_enabled AS "twoFactorEnabled",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM users
@@ -196,6 +207,9 @@ export class AuthRepository {
           email,
           phone_number AS "phoneNumber",
           password AS "passwordHash",
+          is_verified AS "isVerified",
+          two_factor_secret AS "twoFactorSecret",
+          two_factor_enabled AS "twoFactorEnabled",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM users
@@ -212,6 +226,21 @@ export class AuthRepository {
     }
 
     return user;
+  }
+
+  public async updateUserPassword(
+    userId: string,
+    passwordHash: string,
+  ): Promise<void> {
+    await db.query(
+      `
+        UPDATE users
+        SET password = $1,
+            updated_at = NOW()
+        WHERE id = $2
+      `,
+      [passwordHash, userId],
+    );
   }
 
   public async getAllUsernames(): Promise<string[]> {
@@ -375,7 +404,114 @@ export class AuthRepository {
       client.release();
     }
   }
+
+  // OTP Management
+  public async createOTP(
+    email: string,
+    otp: string,
+    expiresAt: Date,
+  ): Promise<void> {
+    await db.query(
+      `
+        INSERT INTO otps (email, otp, expires_at)
+        VALUES ($1, $2, $3)
+      `,
+      [email, otp, expiresAt],
+    );
+  }
+
+  public async findLatestOTP(
+    email: string,
+  ): Promise<{ otp: string; expiresAt: Date; createdAt: Date } | null> {
+    const { rows } = await db.query<any>(
+      `
+        SELECT otp, expires_at AS "expiresAt", created_at AS "createdAt"
+        FROM otps
+        WHERE email = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [email],
+    );
+    return rows[0] || null;
+  }
+
+  public async deleteOTPsForEmail(email: string): Promise<void> {
+    await db.query(
+      `
+        DELETE FROM otps
+        WHERE email = $1
+      `,
+      [email],
+    );
+  }
+
+  // Password Reset Management
+  public async createPasswordReset(
+    userId: string,
+    token: string,
+    expiresAt: Date,
+  ): Promise<void> {
+    await db.query(
+      `
+        INSERT INTO password_resets (user_id, token, expires_at)
+        VALUES ($1, $2, $3)
+      `,
+      [userId, token, expiresAt],
+    );
+  }
+
+  public async findPasswordResetByToken(
+    token: string,
+  ): Promise<{ userId: string; expiresAt: Date } | null> {
+    const { rows } = await db.query<any>(
+      `
+        SELECT user_id AS "userId", expires_at AS "expiresAt"
+        FROM password_resets
+        WHERE token = $1
+        LIMIT 1
+      `,
+      [token],
+    );
+    return rows[0] || null;
+  }
+
+  public async deletePasswordReset(token: string): Promise<void> {
+    await db.query(
+      `
+        DELETE FROM password_resets
+        WHERE token = $1
+      `,
+      [token],
+    );
+  }
+
+  public async verifyUser(userId: string): Promise<void> {
+    await db.query(
+      `
+        UPDATE users
+        SET is_verified = TRUE
+        WHERE id = $1
+      `,
+      [userId],
+    );
+  }
+
+  public async update2FA(
+    userId: string,
+    enabled: boolean,
+    secret: string | null,
+  ): Promise<void> {
+    await db.query(
+      `
+        UPDATE users
+        SET two_factor_enabled = $1,
+            two_factor_secret = $2
+        WHERE id = $3
+      `,
+      [enabled, secret, userId],
+    );
+  }
 }
 
 export const authRepository = new AuthRepository();
-

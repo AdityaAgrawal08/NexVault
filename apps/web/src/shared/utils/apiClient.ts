@@ -1,5 +1,7 @@
 let accessToken: string | null = null;
 
+export const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || "http://localhost:3000";
+
 export function setAccessToken(token: string | null) {
   accessToken = token;
 }
@@ -13,6 +15,10 @@ interface RequestOptions extends RequestInit {
 }
 
 export async function apiRequest(url: string, options: RequestOptions = {}): Promise<any> {
+  const fullUrl = url.startsWith("http://") || url.startsWith("https://")
+    ? url
+    : `${API_BASE_URL}${url.startsWith("/") ? "" : "/"}${url}`;
+
   const headers = new Headers(options.headers || {});
 
   if (accessToken && !options.skipAuth) {
@@ -23,16 +29,16 @@ export async function apiRequest(url: string, options: RequestOptions = {}): Pro
     headers.set("Content-Type", "application/json");
   }
 
-  const response = await fetch(url, {
+  const response = await fetch(fullUrl, {
     ...options,
     headers,
     credentials: "include", // Ensure cookies are sent and received
   });
 
   // Handle 401 Unauthorized (potential token expiration)
-  if (response.status === 401 && !options.skipAuth && !url.endsWith("/refresh")) {
+  if (response.status === 401 && !options.skipAuth && !fullUrl.endsWith("/refresh")) {
     try {
-      const refreshResponse = await fetch("http://localhost:3000/refresh", {
+      const refreshResponse = await fetch(`${API_BASE_URL}/refresh`, {
         method: "POST",
         credentials: "include",
       });
@@ -43,7 +49,7 @@ export async function apiRequest(url: string, options: RequestOptions = {}): Pro
         localStorage.setItem("user", JSON.stringify(result.data.user));
 
         headers.set("Authorization", `Bearer ${accessToken}`);
-        const retryResponse = await fetch(url, {
+        const retryResponse = await fetch(fullUrl, {
           ...options,
           headers,
           credentials: "include",
