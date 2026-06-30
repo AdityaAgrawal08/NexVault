@@ -8,9 +8,10 @@ A high-performance, robust, and secure authentication system built as a monorepo
 
 ### 1. Pluggable Production-Grade Databases
 - **PostgreSQL**: Stores core transactional user profiles, credentials, roles, and session metadata.
-- **Redis (Auto-detection & Fallback)**:
-  - If `REDIS_URL` is provided, the system leverages Redis for high-throughput, low-latency operations.
-  - If `REDIS_URL` is absent, the system gracefully falls back to local in-memory and PostgreSQL stores, ensuring a **zero-setup** developer experience.
+- **Redis (Active)**:
+  - The system automatically detects `REDIS_URL` in your `.env` file.
+  - When active, the system offloads high-write, transient, and caching operations from PostgreSQL to Redis.
+  - If `REDIS_URL` is omitted, the system gracefully falls back to local in-memory and PostgreSQL stores, ensuring a **zero-setup** developer experience.
 - **Asynchronous Email Delivery Queue**: Swaps database polling with Redis Lists (`LPUSH`/`RPOP`) to process outbound emails asynchronously (e.g. OTPs, welcome emails) without blocking user requests.
 - **Write-Through Session Cache**: Caches active sessions in Redis, reducing PostgreSQL read pressure and validating tokens in sub-milliseconds.
 
@@ -42,7 +43,7 @@ A high-performance, robust, and secure authentication system built as a monorepo
 - [Node.js](https://nodejs.org/) (v18+)
 - [pnpm](https://pnpm.io/)
 - PostgreSQL (Local or hosted, e.g. Neon)
-- *Optional*: Redis (v6+)
+- Redis (Local or hosted, e.g. Upstash or local docker/system service)
 
 ### 1. Environment Variables
 Create a `.env` file in `apps/api/`:
@@ -50,7 +51,7 @@ Create a `.env` file in `apps/api/`:
 PORT=3000
 DATABASE_URL=postgresql://user:pass@host/db
 JWT_SECRET=super-secure-dev-jwt-secret-key-123456
-REDIS_URL=redis://localhost:6379 # Optional: omit for in-memory fallback
+REDIS_URL=redis://localhost:6379 # Detected and active
 ```
 
 Create a `.env` file in `apps/web/`:
@@ -69,3 +70,9 @@ pnpm build
 # Start the development server (Frontend on :3001, API on :3000)
 pnpm dev
 ```
+
+On startup, you will see the following confirmation in your API terminal logs:
+```
+[Redis] Connected successfully.
+```
+This confirms that all pluggable stores (Rate Limiting, OTP, Session, and Email Queue) are successfully running on Redis.
