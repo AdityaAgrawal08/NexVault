@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Link, Navigate } from "react-router-dom";
 import { apiRequest } from "@/shared/utils/apiClient";
+import ReauthModal from "@/shared/components/ReauthModal";
 
 interface ActiveSession {
   id: string;
@@ -22,6 +23,10 @@ export default function SessionsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  
+  // Re-auth State
+  const [reauthOpen, setReauthOpen] = useState(false);
+  const [reauthToken, setReauthToken] = useState("");
 
   useEffect(() => {
     fetchSessions();
@@ -55,17 +60,34 @@ export default function SessionsPage() {
     }
   }
 
-  async function handleRevokeOthers() {
+  // Initiates the revoke others flow (requires re-auth)
+  function triggerRevokeOthers() {
+    if (reauthToken) {
+      handleRevokeOthers(reauthToken);
+    } else {
+      setReauthOpen(true);
+    }
+  }
+
+  async function handleRevokeOthers(token = reauthToken) {
     setActionLoading("others");
     setError("");
     try {
       await apiRequest("/sessions/revoke-others", {
         method: "POST",
+        headers: {
+          "X-Reauth-Token": token,
+        },
       });
-      // Re-fetch sessions to show only the current one remaining
+      setReauthToken("");
       await fetchSessions();
     } catch (err: any) {
-      setError(err.message || "Failed to revoke other sessions.");
+      if (err.code === "REAUTH_REQUIRED") {
+        setReauthToken("");
+        setReauthOpen(true);
+      } else {
+        setError(err.message || "Failed to revoke other sessions.");
+      }
     } finally {
       setActionLoading(null);
     }
@@ -102,7 +124,7 @@ export default function SessionsPage() {
           <div style={{ display: "flex", flexDirection: "column", gap: "1rem", width: "100%" }}>
             {sessions.length > 1 && (
               <button
-                onClick={handleRevokeOthers}
+                onClick={triggerRevokeOthers}
                 className="submit-btn"
                 disabled={actionLoading !== null}
                 style={{
@@ -181,6 +203,16 @@ export default function SessionsPage() {
           </div>
         )}
       </div>
+
+      <ReauthModal
+        isOpen={reauthOpen}
+        onClose={() => setReauthOpen(false)}
+        onSuccess={(token) => {
+          setReauthToken(token);
+          handleRevokeOthers(token);
+        }}
+        actionName="logging out of all other devices"
+      />
     </div>
   );
 }

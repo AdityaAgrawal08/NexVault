@@ -2,6 +2,7 @@ import { Router } from "express";
 
 import { authController } from "./auth.controller";
 import { authMiddleware } from "../../core/security/auth.middleware";
+import { reauthMiddleware } from "../../core/security/reauth.middleware";
 import { rateLimiter } from "../../shared/middleware/rate-limiter.middleware";
 
 const router = Router();
@@ -39,36 +40,6 @@ router.post(
 );
 
 router.post(
-  "/verify-2fa",
-  authLimiter,
-  authController.verify2FA.bind(authController),
-);
-
-router.post(
-  "/verify-setup-2fa",
-  authLimiter,
-  authController.verifySetup2FA.bind(authController),
-);
-
-router.post(
-  "/enable-2fa",
-  authMiddleware,
-  authController.enable2FA.bind(authController),
-);
-
-router.post(
-  "/verify-enable-2fa",
-  authMiddleware,
-  authController.verifyEnable2FA.bind(authController),
-);
-
-router.post(
-  "/disable-2fa",
-  authMiddleware,
-  authController.disable2FA.bind(authController),
-);
-
-router.post(
   "/forgot-password",
   authLimiter,
   authController.forgotPassword.bind(authController),
@@ -96,6 +67,61 @@ router.post(
   authController.logout.bind(authController),
 );
 
+// --- Re-authentication ---
+router.post(
+  "/reauth/password",
+  authMiddleware,
+  authController.reauthWithPassword.bind(authController),
+);
+
+router.post(
+  "/reauth/otp/send",
+  authMiddleware,
+  authController.sendReauthOTP.bind(authController),
+);
+
+router.post(
+  "/reauth/otp/verify",
+  authMiddleware,
+  authController.verifyReauthOTP.bind(authController),
+);
+
+// --- Sensitive Operations (Require Re-authentication) ---
+router.post(
+  "/profile/change-password",
+  authMiddleware,
+  reauthMiddleware,
+  authController.changePassword.bind(authController),
+);
+
+router.post(
+  "/profile/change-email/send-otp",
+  authMiddleware,
+  reauthMiddleware,
+  authController.sendEmailChangeOTP.bind(authController),
+);
+
+router.post(
+  "/profile/change-email/verify",
+  authMiddleware,
+  reauthMiddleware,
+  authController.verifyAndChangeEmail.bind(authController),
+);
+
+router.delete(
+  "/profile",
+  authMiddleware,
+  reauthMiddleware,
+  authController.deleteAccount.bind(authController),
+);
+
+router.post(
+  "/sessions/revoke-others",
+  authMiddleware,
+  reauthMiddleware,
+  authController.revokeOtherSessions.bind(authController),
+);
+
 // --- Active Session Management ---
 router.get(
   "/sessions",
@@ -107,12 +133,6 @@ router.delete(
   "/sessions/:sessionId",
   authMiddleware,
   authController.revokeSession.bind(authController),
-);
-
-router.post(
-  "/sessions/revoke-others",
-  authMiddleware,
-  authController.revokeOtherSessions.bind(authController),
 );
 
 // --- Security Audit Logs ---

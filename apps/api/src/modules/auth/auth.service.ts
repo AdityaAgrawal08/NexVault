@@ -7,6 +7,7 @@ import {
 } from "../../core/security/password";
 
 import { authRepository } from "./auth.repository";
+import { db } from "../../core/database/postgres";
 import { usernameBloomFilter } from "./username-bloom-filter";
 
 import {
@@ -16,10 +17,10 @@ import {
   RefreshTokenPayload,
 } from "../../core/security/jwt";
 
-import { generateSecret, verifyTOTP } from "../../core/security/totp";
 import { emailService } from "../email/email.service";
 import { EmailType } from "../email/email.types";
 import { auditService } from "../audit/audit.service";
+import { otpService, OTPPurpose } from "../otp/otp.service";
 
 import { AppError } from "../../shared/errors/app-error";
 
@@ -44,55 +45,14 @@ const JWT_SECRET = process.env.JWT_SECRET || "super-secure-dev-jwt-secret-key-12
 class AuthService {
   // --- OTP Verification ---
   public async sendOTP(email: string): Promise<void> {
-    // Enforce 1-minute rate limit
-    const latest = await authRepository.findLatestOTP(email);
-    if (latest) {
-      const timeSinceLast = Date.now() - new Date(latest.createdAt).getTime();
-      if (timeSinceLast < 60 * 1000) {
-        throw new AppError({
-          message: `Please wait ${Math.ceil((60 * 1000 - timeSinceLast) / 1000)} seconds before requesting a new OTP.`,
-          statusCode: 429,
-          code: "OTP_RATE_LIMIT_EXCEEDED",
-        });
-      }
-    }
-
-    // Generate 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 mins validity
-
-    await authRepository.createOTP(email, otp, expiresAt);
-
-    // Enqueue email verification OTP job asynchronously
-    await emailService.enqueue(email, EmailType.EMAIL_VERIFICATION, {
-      username: "User",
-      otp,
-    });
+    await otpService.sendOTP(email, OTPPurpose.EMAIL_VERIFICATION);
   }
 
   public async register(
     input: RegisterUserRequest & { otp: string },
   ): Promise<RegisterUserResponse> {
     // 1. Verify OTP
-    const latest = await authRepository.findLatestOTP(input.email);
-    if (!latest || latest.otp !== input.otp) {
-      throw new AppError({
-        message: "Invalid email verification code.",
-        statusCode: 400,
-        code: "AUTH_INVALID_OTP",
-      });
-    }
-
-    if (new Date() > new Date(latest.expiresAt)) {
-      throw new AppError({
-        message: "Email verification code has expired.",
-        statusCode: 400,
-        code: "AUTH_EXPIRED_OTP",
-      });
-    }
-
-    // Clean up OTPs
-    await authRepository.deleteOTPsForEmail(input.email);
+    await otpService.verifyOTP(input.email, OTPPurpose.EMAIL_VERIFICATION, input.otp);
 
     // 2. Pre-check username availability
     try {
@@ -159,11 +119,7 @@ class AuthService {
     input: LoginRequest,
     ipAddress?: string,
     userAgent?: string,
-  ): Promise<
-    | LoginResult
-    | { mfaRequired: true; mfaToken: string }
-    | { mfaSetupRequired: true; mfaToken: string; mfaSetup: { secret: string; qrCodeUrl: string } }
-  > {
+  ): Promise<LoginResult> {
     const user = input.identifier.includes("@")
       ? await authRepository.findUserByEmail(input.identifier)
       : await authRepository.findUserByUsername(input.identifier);
@@ -193,7 +149,6 @@ class AuthService {
     );
 
     if (!isPasswordValid) {
-      // Increment failed attempts and potentially lock account
       const lockoutStatus = await authRepository.incrementFailedAttempts(user.id);
       
       await auditService.log({
@@ -227,76 +182,6 @@ class AuthService {
       });
     }
 
-    const mfaToken = jwt.sign(
-      { userId: user.id, type: "mfa" },
-      JWT_SECRET,
-      { expiresIn: "5m" }
-    );
-
-    // Enforce Mandatory MFA
-    if (!user.twoFactorEnabled || !user.twoFactorSecret) {
-      // Setup is required on first login
-      const secret = generateSecret();
-      const otpauthUrl = `otpauth://totp/NexVault:${user.username}?secret=${secret}&issuer=NexVault`;
-      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(otpauthUrl)}`;
-
-      return {
-        mfaSetupRequired: true,
-        mfaToken,
-        mfaSetup: {
-          secret,
-          qrCodeUrl,
-        },
-      };
-    }
-
-    return {
-      mfaRequired: true,
-      mfaToken,
-    };
-  }
-
-  public async verify2FALogin(
-    mfaToken: string,
-    code: string,
-    ipAddress?: string,
-    userAgent?: string,
-  ): Promise<LoginResult> {
-    let payload: { userId: string; type: string };
-    try {
-      payload = jwt.verify(mfaToken, JWT_SECRET) as any;
-    } catch (err) {
-      throw new AppError({
-        message: "Invalid or expired MFA session.",
-        statusCode: 401,
-        code: "AUTH_MFA_SESSION_INVALID",
-      });
-    }
-
-    if (payload.type !== "mfa") {
-      throw new AppError({
-        message: "Invalid session type.",
-        statusCode: 401,
-        code: "AUTH_MFA_SESSION_INVALID",
-      });
-    }
-
-    const user = await authRepository.findUserById(payload.userId);
-    if (!user.twoFactorSecret || !verifyTOTP(user.twoFactorSecret, code)) {
-      await auditService.log({
-        userId: user.id,
-        action: "MFA_VERIFICATION_FAILED",
-        ipAddress,
-        userAgent,
-      });
-
-      throw new AppError({
-        message: "Invalid authenticator code.",
-        statusCode: 401,
-        code: "AUTH_MFA_CODE_INVALID",
-      });
-    }
-
     // Log successful login
     await auditService.log({
       userId: user.id,
@@ -308,122 +193,130 @@ class AuthService {
     return this.generateUserSession(user, ipAddress, userAgent);
   }
 
-  public async verifyAndSetup2FA(
-    mfaToken: string,
-    secret: string,
-    code: string,
-    ipAddress?: string,
-    userAgent?: string,
-  ): Promise<LoginResult> {
-    let payload: { userId: string; type: string };
-    try {
-      payload = jwt.verify(mfaToken, JWT_SECRET) as any;
-    } catch (err) {
-      throw new AppError({
-        message: "Invalid or expired MFA setup session.",
-        statusCode: 401,
-        code: "AUTH_MFA_SESSION_INVALID",
-      });
-    }
-
-    if (payload.type !== "mfa") {
-      throw new AppError({
-        message: "Invalid session type.",
-        statusCode: 401,
-        code: "AUTH_MFA_SESSION_INVALID",
-      });
-    }
-
-    const isValid = verifyTOTP(secret, code);
-    if (!isValid) {
-      throw new AppError({
-        message: "Invalid authenticator code.",
-        statusCode: 400,
-        code: "AUTH_MFA_CODE_INVALID",
-      });
-    }
-
-    // Enable 2FA on the user
-    await authRepository.update2FA(payload.userId, true, secret);
-
-    const user = await authRepository.findUserById(payload.userId);
-    
-    // Enqueue security alert for 2FA enabled
-    await emailService.enqueue(user.email, EmailType.SECURITY_ALERT, {
-      username: user.username,
-      alertMessage: "Two-Factor Authentication has been enabled on your account.",
-      ipAddress: ipAddress || "Unknown",
-    });
-
-    // Log MFA enrollment
-    await auditService.log({
-      userId: user.id,
-      action: "MFA_ENABLED",
-      ipAddress,
-      userAgent,
-    });
-
-    return this.generateUserSession(user, ipAddress, userAgent);
+  // --- Re-authentication ---
+  private generateReauthToken(userId: string): string {
+    return jwt.sign(
+      { userId, type: "reauth" },
+      JWT_SECRET,
+      { expiresIn: "5m" } // Short-lived (5 minutes)
+    );
   }
 
-  // --- 2FA Management ---
-  public async enable2FA(userId: string): Promise<{ secret: string; qrCodeUrl: string }> {
+  public async reauthWithPassword(userId: string, passwordMask: string): Promise<string> {
     const user = await authRepository.findUserById(userId);
-    const secret = generateSecret();
-    const otpauthUrl = `otpauth://totp/NexVault:${user.username}?secret=${secret}&issuer=NexVault`;
-    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(otpauthUrl)}`;
+    const isValid = await verifyPassword(passwordMask, user.passwordHash);
 
-    return { secret, qrCodeUrl };
-  }
-
-  public async verifyAndEnable2FA(
-    userId: string,
-    secret: string,
-    code: string,
-  ): Promise<void> {
-    const isValid = verifyTOTP(secret, code);
     if (!isValid) {
       throw new AppError({
-        message: "Invalid authenticator code.",
-        statusCode: 400,
-        code: "AUTH_MFA_CODE_INVALID",
+        message: "Incorrect password.",
+        statusCode: 401,
+        code: "AUTH_REAUTH_PASSWORD_FAILED",
       });
     }
 
-    await authRepository.update2FA(userId, true, secret);
+    await auditService.log({
+      userId,
+      action: "REAUTH_PASSWORD_SUCCESS",
+    });
+
+    return this.generateReauthToken(userId);
   }
 
-  public async disable2FA(userId: string): Promise<void> {
-    throw new AppError({
-      message: "Multi-factor authentication is mandatory and cannot be disabled.",
-      statusCode: 400,
-      code: "AUTH_MFA_MANDATORY",
+  public async sendReauthOTP(userId: string): Promise<void> {
+    const user = await authRepository.findUserById(userId);
+    await otpService.sendOTP(user.email, OTPPurpose.REAUTHENTICATION, user.username);
+  }
+
+  public async verifyReauthOTP(userId: string, otp: string): Promise<string> {
+    const user = await authRepository.findUserById(userId);
+    await otpService.verifyOTP(user.email, OTPPurpose.REAUTHENTICATION, otp);
+
+    await auditService.log({
+      userId,
+      action: "REAUTH_OTP_SUCCESS",
+    });
+
+    return this.generateReauthToken(userId);
+  }
+
+  // --- Sensitive Operations ---
+  public async changePassword(userId: string, newPasswordMask: string): Promise<void> {
+    const passwordHash = await hashPassword(newPasswordMask);
+    await authRepository.updateUserPassword(userId, passwordHash);
+    
+    // Revoke all active sessions for security when password changes
+    await authRepository.revokeAllUserRefreshTokens(userId);
+
+    await auditService.log({
+      userId,
+      action: "PASSWORD_CHANGED_SECURE",
+    });
+  }
+
+  public async sendEmailChangeOTP(userId: string, newEmail: string): Promise<void> {
+    // Pre-check email availability
+    try {
+      await authRepository.findUserByEmail(newEmail);
+      throw new UserAlreadyExistsError("email");
+    } catch (error) {
+      if (!(error instanceof UserNotFoundError)) {
+        throw error;
+      }
+    }
+
+    const user = await authRepository.findUserById(userId);
+    await otpService.sendOTP(newEmail, OTPPurpose.EMAIL_CHANGE, user.username);
+  }
+
+  public async verifyAndChangeEmail(userId: string, newEmail: string, otp: string): Promise<void> {
+    // Verify OTP sent to the new email
+    await otpService.verifyOTP(newEmail, OTPPurpose.EMAIL_CHANGE, otp);
+
+    // Update email in database
+    await db.query(
+      `
+        UPDATE users
+        SET email = $1,
+            updated_at = NOW()
+        WHERE id = $2
+      `,
+      [newEmail, userId]
+    );
+
+    await auditService.log({
+      userId,
+      action: "EMAIL_CHANGED_SECURE",
+      metadata: { newEmail },
+    });
+  }
+
+  public async deleteAccount(userId: string): Promise<void> {
+    await db.query(
+      `
+        DELETE FROM users
+        WHERE id = $1
+      `,
+      [userId]
+    );
+
+    await auditService.log({
+      userId,
+      action: "ACCOUNT_DELETED_SECURE",
     });
   }
 
   // --- Password Reset ---
-  public async forgotPassword(email: string, origin = "http://localhost:3001"): Promise<void> {
+  public async forgotPassword(email: string): Promise<void> {
     try {
       const user = await authRepository.findUserByEmail(email);
-      const token = crypto.randomBytes(32).toString("hex");
-      const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
-
-      await authRepository.createPasswordReset(user.id, token, expiresAt);
-
-      const resetLink = `${origin}/reset-password?token=${token}`;
-
-      // Enqueue password reset job asynchronously
-      await emailService.enqueue(user.email, EmailType.PASSWORD_RESET, {
-        username: user.username,
-        resetLink,
-      });
+      // Send a password-reset OTP instead of a token link
+      await otpService.sendOTP(user.email, OTPPurpose.PASSWORD_RESET, user.username);
 
       await auditService.log({
         userId: user.id,
         action: "PASSWORD_RESET_REQUESTED",
       });
     } catch (error) {
-      // Silently ignore UserNotFoundError to prevent email enumeration
       if (!(error instanceof UserNotFoundError)) {
         throw error;
       }
@@ -431,42 +324,16 @@ class AuthService {
     }
   }
 
-  public async resetPassword(token: string, passwordMask: string): Promise<void> {
-    const reset = await authRepository.findPasswordResetByToken(token);
-    if (!reset) {
-      throw new AppError({
-        message: "Invalid or expired password reset token.",
-        statusCode: 400,
-        code: "AUTH_RESET_TOKEN_INVALID",
-      });
-    }
+  public async resetPassword(email: string, otp: string, passwordMask: string): Promise<void> {
+    // Verify OTP first
+    await otpService.verifyOTP(email, OTPPurpose.PASSWORD_RESET, otp);
 
-    if (new Date() > new Date(reset.expiresAt)) {
-      await authRepository.deletePasswordReset(token);
-      throw new AppError({
-        message: "Password reset token has expired.",
-        statusCode: 400,
-        code: "AUTH_RESET_TOKEN_EXPIRED",
-      });
-    }
-
+    const user = await authRepository.findUserByEmail(email);
     const passwordHash = await hashPassword(passwordMask);
-    await authRepository.updateUserPassword(reset.userId, passwordHash);
+    await authRepository.updateUserPassword(user.id, passwordHash);
     
     // Revoke all active sessions for security
-    await authRepository.revokeAllUserRefreshTokens(reset.userId);
-    
-    // Clean up reset token
-    await authRepository.deletePasswordReset(token);
-
-    const user = await authRepository.findUserById(reset.userId);
-
-    // Enqueue password changed notification
-    await emailService.enqueue(user.email, EmailType.PASSWORD_CHANGED, {
-      username: user.username,
-      subject: "Your password has been changed",
-      message: "This is a confirmation that the password for your NexVault account has been successfully changed.",
-    });
+    await authRepository.revokeAllUserRefreshTokens(user.id);
 
     await auditService.log({
       userId: user.id,
@@ -476,25 +343,7 @@ class AuthService {
 
   // --- Verify Email ---
   public async verifyEmail(email: string, otp: string): Promise<void> {
-    const latest = await authRepository.findLatestOTP(email);
-    if (!latest || latest.otp !== otp) {
-      throw new AppError({
-        message: "Invalid email verification code.",
-        statusCode: 400,
-        code: "AUTH_INVALID_OTP",
-      });
-    }
-
-    if (new Date() > new Date(latest.expiresAt)) {
-      throw new AppError({
-        message: "Email verification code has expired.",
-        statusCode: 400,
-        code: "AUTH_EXPIRED_OTP",
-      });
-    }
-
-    // Clean up OTPs
-    await authRepository.deleteOTPsForEmail(email);
+    await otpService.verifyOTP(email, OTPPurpose.EMAIL_VERIFICATION, otp);
 
     // Find user and verify
     const user = await authRepository.findUserByEmail(email);
@@ -551,36 +400,7 @@ class AuthService {
       }
     }
 
-    // Note: Social logins are verified immediately, but since MFA is mandatory,
-    // they still need 2FA enabled!
-    if (!user.twoFactorEnabled || !user.twoFactorSecret) {
-      const mfaToken = jwt.sign(
-        { userId: user.id, type: "mfa" },
-        JWT_SECRET,
-        { expiresIn: "5m" }
-      );
-      const secret = generateSecret();
-      const otpauthUrl = `otpauth://totp/NexVault:${user.username}?secret=${secret}&issuer=NexVault`;
-      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(otpauthUrl)}`;
-
-      return {
-        mfaSetupRequired: true,
-        mfaToken,
-        mfaSetup: {
-          secret,
-          qrCodeUrl,
-        },
-      } as any;
-    }
-
-    return {
-      mfaRequired: true,
-      mfaToken: jwt.sign(
-        { userId: user.id, type: "mfa" },
-        JWT_SECRET,
-        { expiresIn: "5m" }
-      ),
-    } as any;
+    return this.generateUserSession(user, ipAddress, userAgent);
   }
 
   // --- Refresh Session ---
@@ -755,3 +575,4 @@ class AuthService {
 }
 
 export const authService = new AuthService();
+export type { AuthService };

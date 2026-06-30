@@ -2,12 +2,10 @@ import { db } from "./postgres";
 
 export async function initializeDatabase() {
   try {
-    // 1. Alter users table to add new columns for verification, 2FA, roles, and account lockout
+    // 1. Alter users table to add new columns for verification, roles, and account lockout (No TOTP/MFA columns)
     await db.query(`
       ALTER TABLE users 
       ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE,
-      ADD COLUMN IF NOT EXISTS two_factor_secret VARCHAR(255) DEFAULT NULL,
-      ADD COLUMN IF NOT EXISTS two_factor_enabled BOOLEAN DEFAULT FALSE,
       ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'USER',
       ADD COLUMN IF NOT EXISTS failed_login_attempts INT DEFAULT 0,
       ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP WITH TIME ZONE DEFAULT NULL;
@@ -33,18 +31,33 @@ export async function initializeDatabase() {
       ADD COLUMN IF NOT EXISTS user_agent TEXT DEFAULT NULL;
     `);
 
-    // 4. Create the otps table for email verification
+    // 4. Create or recreate the otps table to support hashing, purpose, and attempts
     await db.query(`
       CREATE TABLE IF NOT EXISTS otps (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         email VARCHAR(255) NOT NULL,
-        otp VARCHAR(6) NOT NULL,
+        otp_hash VARCHAR(64) NOT NULL,
+        purpose VARCHAR(50) NOT NULL DEFAULT 'EMAIL_VERIFICATION',
+        attempts INT NOT NULL DEFAULT 0,
         expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
-    // 5. Create the password_resets table
+    // 5. Ensure the otps table has the updated columns if it already existed
+    await db.query(`
+      ALTER TABLE otps
+      ADD COLUMN IF NOT EXISTS purpose VARCHAR(50) NOT NULL DEFAULT 'EMAIL_VERIFICATION',
+      ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS otp_hash VARCHAR(64);
+    `);
+
+    // Migrate any raw 'otp' column to 'otp_hash' if necessary (or just drop the raw 'otp' column in production, but for safety we can just allow both or keep it simple)
+    await db.query(`
+      ALTER TABLE otps DROP COLUMN IF EXISTS otp;
+    `);
+
+    // 6. Create the password_resets table
     await db.query(`
       CREATE TABLE IF NOT EXISTS password_resets (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -55,7 +68,7 @@ export async function initializeDatabase() {
       );
     `);
 
-    // 6. Create ENUMs for email delivery subsystem
+    // 7. Create ENUMs for email delivery subsystem
     await db.query(`
       DO $$ BEGIN
         CREATE TYPE email_status AS ENUM ('QUEUED', 'PROCESSING', 'SENT', 'FAILED', 'EXPIRED');
@@ -70,7 +83,7 @@ export async function initializeDatabase() {
       END $$;
     `);
 
-    // 7. Create the email_jobs table
+    // 8. Create the email_jobs table
     await db.query(`
       CREATE TABLE IF NOT EXISTS email_jobs (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -90,7 +103,7 @@ export async function initializeDatabase() {
       );
     `);
 
-    // 8. Create the audit_logs table
+    // 9. Create the audit_logs table
     await db.query(`
       CREATE TABLE IF NOT EXISTS audit_logs (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -103,7 +116,7 @@ export async function initializeDatabase() {
       );
     `);
 
-    // 9. Create indexes for quick lookup
+    // 10. Create indexes for quick lookup
     await db.query(`
       CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id);
     `);
@@ -111,7 +124,7 @@ export async function initializeDatabase() {
       CREATE INDEX IF NOT EXISTS idx_refresh_tokens_token_hash ON refresh_tokens(token_hash);
     `);
     await db.query(`
-      CREATE INDEX IF NOT EXISTS idx_otps_email ON otps(email);
+      CREATE INDEX IF NOT EXISTS idx_otps_email_purpose ON otps(email, purpose);
     `);
     await db.query(`
       CREATE INDEX IF NOT EXISTS idx_password_resets_token ON password_resets(token);
@@ -126,7 +139,7 @@ export async function initializeDatabase() {
       CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
     `);
 
-    console.log("[Database] Initialized tables, columns, enums, and indexes successfully.");
+    console.log("[Database] Initialized tables, columns, enums, and indexes successfully (TOTP removed, OTP updated).");
   } catch (error) {
     console.error("[Database] Initialization failed:", error);
     throw error;

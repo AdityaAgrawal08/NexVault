@@ -7,12 +7,13 @@ import { apiRequest } from "@/shared/utils/apiClient";
 
 export default function ResetPasswordPage() {
   const [searchParams] = useSearchParams();
-  const token = searchParams.get("token") || "";
+  const email = searchParams.get("email") || "";
   const navigate = useNavigate();
 
   const pwField = usePasswordVisibility();
   const cpwField = usePasswordVisibility();
 
+  const [otp, setOtp] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
@@ -20,8 +21,13 @@ export default function ResetPasswordPage() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!token) {
-      setError("Reset token is missing from the URL.");
+    if (!email) {
+      setError("Email address is missing.");
+      return;
+    }
+
+    if (otp.length !== 6) {
+      setError("Please enter a 6-digit verification code.");
       return;
     }
 
@@ -41,13 +47,14 @@ export default function ResetPasswordPage() {
       await apiRequest("/reset-password", {
         method: "POST",
         body: JSON.stringify({
-          token,
+          email,
+          otp: otp.trim(),
           password,
         }),
       });
       navigate("/login", { state: { message: "Password reset successful! Please log in with your new password." } });
     } catch (err: any) {
-      setError(err.message || "Failed to reset password. The link may have expired.");
+      setError(err.message || "Failed to reset password. The code may be incorrect or expired.");
     } finally {
       setLoading(false);
     }
@@ -65,7 +72,7 @@ export default function ResetPasswordPage() {
 
         <form onSubmit={handleSubmit} noValidate>
           <p style={{ fontSize: "13px", color: "var(--color-muted)", textAlign: "center", marginBottom: "1.5rem" }}>
-            Create a strong, secure password containing at least 12 characters, including letters, numbers, and symbols.
+            Enter the 6-digit verification code sent to <strong>{email}</strong> and choose a new password.
           </p>
 
           {error && (
@@ -74,11 +81,19 @@ export default function ResetPasswordPage() {
             </div>
           )}
 
-          {!token && (
-            <div className="form-error" role="alert">
-              Invalid password reset link. No token found in URL.
-            </div>
-          )}
+          <div className="field">
+            <label htmlFor="otp">Verification Code</label>
+            <input
+              id="otp"
+              type="text"
+              maxLength={6}
+              value={otp}
+              onChange={(e) => setOtp(e.target.value)}
+              placeholder="000000"
+              style={{ textAlign: "center", letterSpacing: "4px", fontSize: "18px", fontWeight: "600" }}
+              required
+            />
+          </div>
 
           <div className="field">
             <label htmlFor="password">New Password</label>
@@ -126,7 +141,7 @@ export default function ResetPasswordPage() {
             )}
           </div>
 
-          <button type="submit" className="submit-btn" disabled={loading || !token}>
+          <button type="submit" className="submit-btn" disabled={loading || !email}>
             {loading ? "Updating password…" : "Reset Password"}
           </button>
         </form>

@@ -2,7 +2,6 @@ import type {
   Request,
   Response,
 } from "express";
-import jwt from "jsonwebtoken";
 
 import { registerSchema } from "../../shared/validators/register.validator";
 import { asyncHandler } from "../../shared/errors/async-handler";
@@ -34,7 +33,7 @@ function verifyCSRF(req: Request) {
   
   const target = origin || referer;
   if (target) {
-    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/.test(target);
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(target);
     if (!isLocalhost) {
       throw new AppError({
         message: "Action blocked by CSRF protection policy.",
@@ -160,13 +159,6 @@ class AuthController {
 
     const result = await authService.login(req.body, ip, ua);
 
-    if ("mfaRequired" in result || "mfaSetupRequired" in result) {
-      return res.status(200).json({
-        message: "MFA verification required.",
-        data: result,
-      });
-    }
-
     res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
 
     return res.status(200).json({
@@ -175,105 +167,6 @@ class AuthController {
         user: result.user,
         accessToken: result.accessToken,
       },
-    });
-  });
-
-  public verify2FA = asyncHandler(async (
-    req: Request,
-    res: Response,
-  ) => {
-    const { mfaToken, code } = req.body;
-    if (typeof mfaToken !== "string" || typeof code !== "string") {
-      return res.status(400).json({
-        message: "MFA token and code are required.",
-      });
-    }
-
-    const ip = req.ip || req.socket.remoteAddress || undefined;
-    const ua = req.headers["user-agent"] || undefined;
-
-    const result = await authService.verify2FALogin(mfaToken, code, ip, ua);
-
-    res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
-
-    return res.status(200).json({
-      message: "MFA verification successful.",
-      data: {
-        user: result.user,
-        accessToken: result.accessToken,
-      },
-    });
-  });
-
-  public verifySetup2FA = asyncHandler(async (
-    req: Request,
-    res: Response,
-  ) => {
-    const { mfaToken, secret, code } = req.body;
-    if (typeof mfaToken !== "string" || typeof secret !== "string" || typeof code !== "string") {
-      return res.status(400).json({
-        message: "MFA token, secret, and code are required.",
-      });
-    }
-
-    const ip = req.ip || req.socket.remoteAddress || undefined;
-    const ua = req.headers["user-agent"] || undefined;
-
-    const result = await authService.verifyAndSetup2FA(mfaToken, secret, code, ip, ua);
-
-    res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
-
-    return res.status(200).json({
-      message: "MFA setup and verification successful.",
-      data: {
-        user: result.user,
-        accessToken: result.accessToken,
-      },
-    });
-  });
-
-  public enable2FA = asyncHandler(async (
-    req: any,
-    res: Response,
-  ) => {
-    const userId = req.user.userId;
-    const result = await authService.enable2FA(userId);
-
-    return res.status(200).json({
-      message: "TOTP secret generated. Verify to enable.",
-      data: result,
-    });
-  });
-
-  public verifyEnable2FA = asyncHandler(async (
-    req: any,
-    res: Response,
-  ) => {
-    const userId = req.user.userId;
-    const { secret, code } = req.body;
-
-    if (typeof secret !== "string" || typeof code !== "string") {
-      return res.status(400).json({
-        message: "Secret and code are required.",
-      });
-    }
-
-    await authService.verifyAndEnable2FA(userId, secret, code);
-
-    return res.status(200).json({
-      message: "Two-factor authentication enabled successfully.",
-    });
-  });
-
-  public disable2FA = asyncHandler(async (
-    req: any,
-    res: Response,
-  ) => {
-    const userId = req.user.userId;
-    await authService.disable2FA(userId);
-
-    return res.status(200).json({
-      message: "Two-factor authentication disabled successfully.",
     });
   });
 
@@ -288,12 +181,10 @@ class AuthController {
       });
     }
 
-    const origin = req.headers.origin || (req.headers.referer ? new URL(req.headers.referer).origin : null) || "http://localhost:3001";
-
-    await authService.forgotPassword(email.trim(), origin);
+    await authService.forgotPassword(email.trim());
 
     return res.status(200).json({
-      message: "If the email exists, a password reset link has been sent.",
+      message: "If the email exists, a verification code has been sent.",
     });
   });
 
@@ -301,14 +192,14 @@ class AuthController {
     req: Request,
     res: Response,
   ) => {
-    const { token, password } = req.body;
-    if (typeof token !== "string" || typeof password !== "string") {
+    const { email, otp, password } = req.body;
+    if (typeof email !== "string" || typeof otp !== "string" || typeof password !== "string") {
       return res.status(400).json({
-        message: "Token and password are required.",
+        message: "Email, OTP, and new password are required.",
       });
     }
 
-    await authService.resetPassword(token, password);
+    await authService.resetPassword(email.trim(), otp.trim(), password);
 
     return res.status(200).json({
       message: "Password has been reset successfully.",
@@ -335,13 +226,6 @@ class AuthController {
       email,
       username,
     }, ip, ua);
-
-    if ("mfaRequired" in result || "mfaSetupRequired" in result) {
-      return res.status(200).json({
-        message: "MFA verification required.",
-        data: result,
-      });
-    }
 
     res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
 
@@ -405,6 +289,132 @@ class AuthController {
     });
   });
 
+  // --- Re-authentication ---
+  public reauthWithPassword = asyncHandler(async (
+    req: any,
+    res: Response,
+  ) => {
+    const userId = req.user.userId;
+    const { password } = req.body;
+
+    if (typeof password !== "string") {
+      return res.status(400).json({ message: "Password is required." });
+    }
+
+    const reauthToken = await authService.reauthWithPassword(userId, password);
+
+    return res.status(200).json({
+      message: "Re-authentication successful.",
+      data: { reauthToken },
+    });
+  });
+
+  public sendReauthOTP = asyncHandler(async (
+    req: any,
+    res: Response,
+  ) => {
+    const userId = req.user.userId;
+    await authService.sendReauthOTP(userId);
+
+    return res.status(200).json({
+      message: "Re-authentication code sent to your registered email.",
+    });
+  });
+
+  public verifyReauthOTP = asyncHandler(async (
+    req: any,
+    res: Response,
+  ) => {
+    const userId = req.user.userId;
+    const { otp } = req.body;
+
+    if (typeof otp !== "string") {
+      return res.status(400).json({ message: "Verification code is required." });
+    }
+
+    const reauthToken = await authService.verifyReauthOTP(userId, otp);
+
+    return res.status(200).json({
+      message: "Re-authentication successful.",
+      data: { reauthToken },
+    });
+  });
+
+  // --- Sensitive Operations (Enforced by reauthMiddleware) ---
+  public changePassword = asyncHandler(async (
+    req: any,
+    res: Response,
+  ) => {
+    const userId = req.user.userId;
+    const { newPassword } = req.body;
+
+    if (typeof newPassword !== "string" || newPassword.length < 8) {
+      return res.status(400).json({
+        message: "New password must be at least 8 characters long.",
+      });
+    }
+
+    await authService.changePassword(userId, newPassword);
+
+    return res.status(200).json({
+      message: "Password changed successfully. All other sessions have been revoked.",
+    });
+  });
+
+  public sendEmailChangeOTP = asyncHandler(async (
+    req: any,
+    res: Response,
+  ) => {
+    const userId = req.user.userId;
+    const { newEmail } = req.body;
+
+    if (typeof newEmail !== "string" || !newEmail.includes("@")) {
+      return res.status(400).json({
+        message: "A valid new email address is required.",
+      });
+    }
+
+    await authService.sendEmailChangeOTP(userId, newEmail);
+
+    return res.status(200).json({
+      message: "Verification code sent to the new email address.",
+    });
+  });
+
+  public verifyAndChangeEmail = asyncHandler(async (
+    req: any,
+    res: Response,
+  ) => {
+    const userId = req.user.userId;
+    const { newEmail, otp } = req.body;
+
+    if (typeof newEmail !== "string" || typeof otp !== "string") {
+      return res.status(400).json({
+        message: "New email and verification code are required.",
+      });
+    }
+
+    await authService.verifyAndChangeEmail(userId, newEmail, otp);
+
+    return res.status(200).json({
+      message: "Email address updated successfully.",
+    });
+  });
+
+  public deleteAccount = asyncHandler(async (
+    req: any,
+    res: Response,
+  ) => {
+    const userId = req.user.userId;
+    await authService.deleteAccount(userId);
+
+    res.clearCookie("refreshToken", CLEAR_COOKIE_OPTIONS);
+
+    return res.status(200).json({
+      message: "Account deleted successfully.",
+    });
+  });
+
   // --- Active Session Management ---
   public getSessions = asyncHandler(async (
     req: any,
@@ -413,7 +423,6 @@ class AuthController {
     const userId = req.user.userId;
     const sessions = await authService.getActiveSessions(userId);
     
-    // Parse user agent to extract browser and OS for premium UX
     const sessionsWithMetadata = sessions.map((s) => {
       const ua = s.userAgent || "";
       let browser = "Unknown Browser";
@@ -482,7 +491,6 @@ class AuthController {
       });
     }
 
-    // Identify current token ID from hash
     const payload = verifyRefreshToken(token);
     await authService.revokeOtherSessions(userId, payload.tokenId);
 
@@ -496,7 +504,6 @@ class AuthController {
     req: any,
     res: Response,
   ) => {
-    // ABAC Check: Regular users can only fetch their own logs. ADMIN/MANAGER can fetch all logs.
     const userId = req.user.userId;
     const userRole = req.user.role;
 
@@ -526,3 +533,4 @@ class AuthController {
 }
 
 export const authController = new AuthController();
+export type { AuthController };
