@@ -1,13 +1,10 @@
-import { Pool } from "pg"; //Because every request should not create a new database connection.
-import dotenv from "dotenv";
-// process.env contains:
-// {
-//  DATABASE_URL: "...",
-//  PORT: "...",
-//  JWT_SECRET: "..."
-// }
-dotenv.config();
+import pg from "pg";
 
-export const db = new Pool({ //pool manages connections automatically. acquires an available connection, executes the query, and returns the connection to the pool for reuse. scales efficiently under concurrent load
+const { Pool } = pg;
+
+export const db = new Pool({
   connectionString: process.env.DATABASE_URL,
+  max: 50, // Increase max connections from default 10 to 50
+  idleTimeoutMillis: 30000, // Close idle connections after 30 seconds
+  connectionTimeoutMillis: 5000, // Timeout after 5 seconds if a connection cannot be acquired
 });

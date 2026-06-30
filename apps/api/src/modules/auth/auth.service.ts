@@ -17,6 +17,8 @@ import {
 } from "../../core/security/jwt";
 
 import { generateSecret, verifyTOTP } from "../../core/security/totp";
+import { emailService } from "../email/email.service";
+import { EmailType } from "../email/email.types";
 
 import { AppError } from "../../shared/errors/app-error";
 
@@ -60,8 +62,11 @@ class AuthService {
 
     await authRepository.createOTP(email, otp, expiresAt);
 
-    // Mock send - log to console
-    console.log(`\n========================================\n[EMAIL MOCK] Sent OTP "${otp}" to ${email}\n========================================\n`);
+    // Enqueue email verification OTP job asynchronously
+    await emailService.enqueue(email, EmailType.EMAIL_VERIFICATION, {
+      username: "User",
+      otp,
+    });
   }
 
   public async register(
@@ -132,6 +137,11 @@ class AuthService {
     // Mark user as verified since they verified their OTP during registration
     await authRepository.verifyUser(user.id);
 
+    // Enqueue a Welcome email
+    await emailService.enqueue(user.email, EmailType.WELCOME, {
+      username: user.username,
+    });
+
     usernameBloomFilter.add(user.username.toLowerCase());
     return user;
   }
@@ -139,7 +149,11 @@ class AuthService {
   // --- Login & Session ---
   public async login(
     input: LoginRequest,
-  ): Promise<LoginResult | { mfaRequired: true; mfaToken: string }> {
+  ): Promise<
+    | LoginResult
+    | { mfaRequired: true; mfaToken: string }
+    | { mfaSetupRequired: true; mfaToken: string; mfaSetup: { secret: string; qrCodeUrl: string } }
+  > {
     const user = input.identifier.includes("@")
       ? await authRepository.findUserByEmail(input.identifier)
       : await authRepository.findUserByUsername(input.identifier);
@@ -162,20 +176,33 @@ class AuthService {
       });
     }
 
-    // Check if 2FA is enabled
-    if (user.twoFactorEnabled && user.twoFactorSecret) {
-      const mfaToken = jwt.sign(
-        { userId: user.id, type: "mfa" },
-        JWT_SECRET,
-        { expiresIn: "5m" }
-      );
+    const mfaToken = jwt.sign(
+      { userId: user.id, type: "mfa" },
+      JWT_SECRET,
+      { expiresIn: "5m" }
+    );
+
+    // Enforce Mandatory MFA
+    if (!user.twoFactorEnabled || !user.twoFactorSecret) {
+      // Setup is required on first login
+      const secret = generateSecret();
+      const otpauthUrl = `otpauth://totp/NexVault:${user.username}?secret=${secret}&issuer=NexVault`;
+      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(otpauthUrl)}`;
+
       return {
-        mfaRequired: true,
+        mfaSetupRequired: true,
         mfaToken,
+        mfaSetup: {
+          secret,
+          qrCodeUrl,
+        },
       };
     }
 
-    return this.generateUserSession(user);
+    return {
+      mfaRequired: true,
+      mfaToken,
+    };
   }
 
   public async verify2FALogin(
@@ -213,6 +240,54 @@ class AuthService {
     return this.generateUserSession(user);
   }
 
+  public async verifyAndSetup2FA(
+    mfaToken: string,
+    secret: string,
+    code: string,
+  ): Promise<LoginResult> {
+    let payload: { userId: string; type: string };
+    try {
+      payload = jwt.verify(mfaToken, JWT_SECRET) as any;
+    } catch (err) {
+      throw new AppError({
+        message: "Invalid or expired MFA setup session.",
+        statusCode: 401,
+        code: "AUTH_MFA_SESSION_INVALID",
+      });
+    }
+
+    if (payload.type !== "mfa") {
+      throw new AppError({
+        message: "Invalid session type.",
+        statusCode: 401,
+        code: "AUTH_MFA_SESSION_INVALID",
+      });
+    }
+
+    const isValid = verifyTOTP(secret, code);
+    if (!isValid) {
+      throw new AppError({
+        message: "Invalid authenticator code.",
+        statusCode: 400,
+        code: "AUTH_MFA_CODE_INVALID",
+      });
+    }
+
+    // Enable 2FA on the user
+    await authRepository.update2FA(payload.userId, true, secret);
+
+    const user = await authRepository.findUserById(payload.userId);
+    
+    // Enqueue security alert for 2FA enabled
+    await emailService.enqueue(user.email, EmailType.SECURITY_ALERT, {
+      username: user.username,
+      alertMessage: "Two-Factor Authentication has been enabled on your account.",
+      ipAddress: "Unknown",
+    });
+
+    return this.generateUserSession(user);
+  }
+
   // --- 2FA Management ---
   public async enable2FA(userId: string): Promise<{ secret: string; qrCodeUrl: string }> {
     const user = await authRepository.findUserById(userId);
@@ -241,7 +316,11 @@ class AuthService {
   }
 
   public async disable2FA(userId: string): Promise<void> {
-    await authRepository.update2FA(userId, false, null);
+    throw new AppError({
+      message: "Multi-factor authentication is mandatory and cannot be disabled.",
+      statusCode: 400,
+      code: "AUTH_MFA_MANDATORY",
+    });
   }
 
   // --- Password Reset ---
@@ -253,8 +332,13 @@ class AuthService {
 
       await authRepository.createPasswordReset(user.id, token, expiresAt);
 
-      // Mock send - log link to console
-      console.log(`\n========================================\n[EMAIL MOCK] Password Reset Link:\n${origin}/reset-password?token=${token}\n========================================\n`);
+      const resetLink = `${origin}/reset-password?token=${token}`;
+
+      // Enqueue password reset job asynchronously
+      await emailService.enqueue(user.email, EmailType.PASSWORD_RESET, {
+        username: user.username,
+        resetLink,
+      });
     } catch (error) {
       // Silently ignore UserNotFoundError to prevent email enumeration
       if (!(error instanceof UserNotFoundError)) {
@@ -291,6 +375,15 @@ class AuthService {
     
     // Clean up reset token
     await authRepository.deletePasswordReset(token);
+
+    const user = await authRepository.findUserById(reset.userId);
+
+    // Enqueue password changed notification
+    await emailService.enqueue(user.email, EmailType.PASSWORD_CHANGED, {
+      username: user.username,
+      subject: "Your password has been changed",
+      message: "This is a confirmation that the password for your NexVault account has been successfully changed.",
+    });
   }
 
   // --- Verify Email ---
@@ -352,12 +445,46 @@ class AuthService {
         await authRepository.verifyUser(created.id);
         user = await authRepository.findUserById(created.id);
         usernameBloomFilter.add(user.username.toLowerCase());
+
+        // Enqueue welcome email for social login
+        await emailService.enqueue(user.email, EmailType.WELCOME, {
+          username: user.username,
+        });
       } else {
         throw err;
       }
     }
 
-    return this.generateUserSession(user);
+    // Note: Social logins are verified immediately, but since MFA is mandatory,
+    // they still need 2FA enabled!
+    if (!user.twoFactorEnabled || !user.twoFactorSecret) {
+      const mfaToken = jwt.sign(
+        { userId: user.id, type: "mfa" },
+        JWT_SECRET,
+        { expiresIn: "5m" }
+      );
+      const secret = generateSecret();
+      const otpauthUrl = `otpauth://totp/NexVault:${user.username}?secret=${secret}&issuer=NexVault`;
+      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(otpauthUrl)}`;
+
+      return {
+        mfaSetupRequired: true,
+        mfaToken,
+        mfaSetup: {
+          secret,
+          qrCodeUrl,
+        },
+      } as any;
+    }
+
+    return {
+      mfaRequired: true,
+      mfaToken: jwt.sign(
+        { userId: user.id, type: "mfa" },
+        JWT_SECRET,
+        { expiresIn: "5m" }
+      ),
+    } as any;
   }
 
   // --- Refresh Session ---

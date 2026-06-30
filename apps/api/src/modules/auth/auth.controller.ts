@@ -8,6 +8,7 @@ import { asyncHandler } from "../../shared/errors/async-handler";
 import { authService } from "./auth.service";
 import { usernameBloomFilter } from "./username-bloom-filter";
 import { authRepository } from "./auth.repository";
+import { emailWorker } from "../email/email.worker";
 
 const COOKIE_OPTIONS = {
   httpOnly: true,
@@ -137,14 +138,11 @@ class AuthController {
   ) => {
     const result = await authService.login(req.body);
 
-    // If MFA is required, return the MFA token instead of setting cookies
-    if ("mfaRequired" in result) {
+    // If MFA is required or setup is required, return the MFA details
+    if ("mfaRequired" in result || "mfaSetupRequired" in result) {
       return res.status(200).json({
         message: "MFA verification required.",
-        data: {
-          mfaRequired: true,
-          mfaToken: result.mfaToken,
-        },
+        data: result,
       });
     }
 
@@ -176,6 +174,30 @@ class AuthController {
 
     return res.status(200).json({
       message: "MFA verification successful.",
+      data: {
+        user: result.user,
+        accessToken: result.accessToken,
+      },
+    });
+  });
+
+  public verifySetup2FA = asyncHandler(async (
+    req: Request,
+    res: Response,
+  ) => {
+    const { mfaToken, secret, code } = req.body;
+    if (typeof mfaToken !== "string" || typeof secret !== "string" || typeof code !== "string") {
+      return res.status(400).json({
+        message: "MFA token, secret, and code are required.",
+      });
+    }
+
+    const result = await authService.verifyAndSetup2FA(mfaToken, secret, code);
+
+    res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
+
+    return res.status(200).json({
+      message: "MFA setup and verification successful.",
       data: {
         user: result.user,
         accessToken: result.accessToken,
@@ -284,6 +306,13 @@ class AuthController {
       username,
     });
 
+    if ("mfaRequired" in result || "mfaSetupRequired" in result) {
+      return res.status(200).json({
+        message: "MFA verification required.",
+        data: result,
+      });
+    }
+
     res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
 
     return res.status(200).json({
@@ -336,6 +365,17 @@ class AuthController {
 
     return res.status(200).json({
       message: "Logged out successfully.",
+    });
+  });
+
+  public getEmailMetrics = asyncHandler(async (
+    req: Request,
+    res: Response,
+  ) => {
+    const metrics = await emailWorker.getMetrics();
+    return res.status(200).json({
+      message: "Email metrics retrieved successfully.",
+      data: metrics,
     });
   });
 }

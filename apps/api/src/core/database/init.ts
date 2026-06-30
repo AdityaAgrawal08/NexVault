@@ -45,7 +45,42 @@ export async function initializeDatabase() {
       );
     `);
 
-    // 5. Create indexes for quick lookup
+    // 5. Create ENUMs for email delivery subsystem
+    await db.query(`
+      DO $$ BEGIN
+        CREATE TYPE email_status AS ENUM ('QUEUED', 'PROCESSING', 'SENT', 'FAILED', 'EXPIRED');
+      EXCEPTION
+        WHEN duplicate_object THEN null;
+      END $$;
+
+      DO $$ BEGIN
+        CREATE TYPE email_priority AS ENUM ('CRITICAL', 'HIGH', 'NORMAL', 'BULK');
+      EXCEPTION
+        WHEN duplicate_object THEN null;
+      END $$;
+    `);
+
+    // 6. Create the email_jobs table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS email_jobs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        recipient VARCHAR(255) NOT NULL,
+        email_type VARCHAR(50) NOT NULL,
+        priority email_priority NOT NULL,
+        payload JSONB NOT NULL,
+        status email_status NOT NULL DEFAULT 'QUEUED',
+        provider VARCHAR(50) NOT NULL,
+        retry_count INT NOT NULL DEFAULT 0,
+        max_retries INT NOT NULL DEFAULT 3,
+        next_attempt_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        failed_reason TEXT,
+        queued_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        processing_started_at TIMESTAMP WITH TIME ZONE,
+        sent_at TIMESTAMP WITH TIME ZONE
+      );
+    `);
+
+    // 7. Create indexes for quick lookup
     await db.query(`
       CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id);
     `);
@@ -58,8 +93,11 @@ export async function initializeDatabase() {
     await db.query(`
       CREATE INDEX IF NOT EXISTS idx_password_resets_token ON password_resets(token);
     `);
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS idx_email_jobs_status_priority_next ON email_jobs(status, priority, next_attempt_at);
+    `);
 
-    console.log("[Database] Initialized tables, columns, and indexes successfully.");
+    console.log("[Database] Initialized tables, columns, enums, and indexes successfully.");
   } catch (error) {
     console.error("[Database] Initialization failed:", error);
     throw error;

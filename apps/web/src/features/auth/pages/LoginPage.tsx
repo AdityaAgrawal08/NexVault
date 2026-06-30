@@ -11,12 +11,16 @@ export default function LoginPage() {
   const location = useLocation();
   const successMessage = location.state?.message;
 
-  // 2FA State
+  // 2FA Verification State
   const [mfaRequired, setMfaRequired] = useState(false);
   const [mfaToken, setMfaToken] = useState("");
   const [mfaCode, setMfaCode] = useState("");
   const [mfaError, setMfaError] = useState("");
   const [mfaVerifying, setMfaVerifying] = useState(false);
+
+  // 2FA Setup State (Mandatory on First Login)
+  const [mfaSetupRequired, setMfaSetupRequired] = useState(false);
+  const [mfaSetupData, setMfaSetupData] = useState<{ secret: string; qrCodeUrl: string } | null>(null);
 
   async function handleSuccess(data: LoginFormData) {
     try {
@@ -28,6 +32,13 @@ export default function LoginPage() {
       if (result.data.mfaRequired) {
         setMfaRequired(true);
         setMfaToken(result.data.mfaToken);
+        return;
+      }
+
+      if (result.data.mfaSetupRequired) {
+        setMfaSetupRequired(true);
+        setMfaToken(result.data.mfaToken);
+        setMfaSetupData(result.data.mfaSetup);
         return;
       }
 
@@ -76,7 +87,37 @@ export default function LoginPage() {
     }
   }
 
-  // Social Login Mock
+  async function handleMFASetupVerify(e: FormEvent) {
+    e.preventDefault();
+    if (mfaCode.length !== 6) {
+      setMfaError("Please enter a 6-digit code.");
+      return;
+    }
+
+    if (!mfaSetupData) return;
+
+    setMfaVerifying(true);
+    setMfaError("");
+    try {
+      const result = await apiRequest("/verify-setup-2fa", {
+        method: "POST",
+        body: JSON.stringify({
+          mfaToken,
+          secret: mfaSetupData.secret,
+          code: mfaCode,
+        }),
+      });
+
+      setAccessToken(result.data.accessToken);
+      localStorage.setItem("user", JSON.stringify(result.data.user));
+      navigate("/profile");
+    } catch (err: any) {
+      setMfaError(err.message || "Invalid verification code.");
+    } finally {
+      setMfaVerifying(false);
+    }
+  }
+
   async function handleSocialLogin(provider: "google" | "github") {
     try {
       const mockEmail = `mock.${provider}.${Math.floor(Math.random() * 1000)}@example.com`;
@@ -91,6 +132,19 @@ export default function LoginPage() {
         }),
       });
 
+      if (result.data.mfaRequired) {
+        setMfaRequired(true);
+        setMfaToken(result.data.mfaToken);
+        return;
+      }
+
+      if (result.data.mfaSetupRequired) {
+        setMfaSetupRequired(true);
+        setMfaToken(result.data.mfaToken);
+        setMfaSetupData(result.data.mfaSetup);
+        return;
+      }
+
       setAccessToken(result.data.accessToken);
       localStorage.setItem("user", JSON.stringify(result.data.user));
       navigate("/profile");
@@ -102,6 +156,81 @@ export default function LoginPage() {
   const { form, errors, setErrors, submitError, submitting, handleChange, handleSubmit } =
     useLoginForm(handleSuccess);
 
+  // Render 2FA Setup view
+  if (mfaSetupRequired && mfaSetupData) {
+    return (
+      <div className="page-center">
+        <div className="card">
+          <div className="brand">
+            <span className="brand-logo">⬡</span>
+            <span className="brand-name">NexVault</span>
+          </div>
+
+          <h1 className="card-title">Set up Two-Factor Auth</h1>
+          <p style={{ fontSize: "13px", color: "var(--color-muted)", textAlign: "center", marginBottom: "1.5rem" }}>
+            MFA is mandatory for your account security. Please scan the QR code to set up your authenticator app.
+          </p>
+
+          {mfaError && (
+            <div className="form-error" role="alert">
+              {mfaError}
+            </div>
+          )}
+
+          <form onSubmit={handleMFASetupVerify}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "1.25rem", marginBottom: "1.5rem" }}>
+              <div style={{ backgroundColor: "white", padding: "8px", borderRadius: "8px", boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>
+                <img src={mfaSetupData.qrCodeUrl} alt="2FA Setup QR" style={{ width: "160px", height: "160px", display: "block" }} />
+              </div>
+              <div style={{ textAlign: "center" }}>
+                <span className="profile-field-label" style={{ display: "block", marginBottom: "2px" }}>Secret Key</span>
+                <code style={{ fontSize: "13px", color: "var(--color-accent)", fontWeight: "600", letterSpacing: "1px" }}>
+                  {mfaSetupData.secret}
+                </code>
+              </div>
+            </div>
+
+            <div className="field">
+              <label htmlFor="setupMfaCode">Verification Code</label>
+              <input
+                id="setupMfaCode"
+                name="setupMfaCode"
+                type="text"
+                maxLength={6}
+                value={mfaCode}
+                onChange={(e) => setMfaCode(e.target.value)}
+                placeholder="000000"
+                style={{ textAlign: "center", letterSpacing: "4px", fontSize: "18px", fontWeight: "600" }}
+                required
+              />
+            </div>
+
+            <button type="submit" className="submit-btn" disabled={mfaVerifying}>
+              {mfaVerifying ? "Verifying & Enabling…" : "Verify and Log In"}
+            </button>
+          </form>
+
+          <button
+            type="button"
+            onClick={() => setMfaSetupRequired(false)}
+            style={{
+              background: "none",
+              border: "none",
+              color: "var(--color-accent)",
+              fontSize: "13px",
+              cursor: "pointer",
+              marginTop: "1rem",
+              width: "100%",
+            }}
+          >
+            Back to login
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Render 2FA Verification view
   if (mfaRequired) {
     return (
       <div className="page-center">
