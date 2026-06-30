@@ -2,13 +2,15 @@ import { db } from "./postgres";
 
 export async function initializeDatabase() {
   try {
-    // 1. Alter users table to add new columns for verification, roles, and account lockout
+    // 1. Alter users table to add new columns for verification, roles, account lockout, and deletion
     await db.query(`
       ALTER TABLE users 
       ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE,
       ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'USER',
       ADD COLUMN IF NOT EXISTS failed_login_attempts INT DEFAULT 0,
-      ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP WITH TIME ZONE DEFAULT NULL;
+      ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP WITH TIME ZONE DEFAULT NULL,
+      ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE DEFAULT NULL,
+      ADD COLUMN IF NOT EXISTS deletion_scheduled_for TIMESTAMP WITH TIME ZONE DEFAULT NULL;
     `);
 
     // 2. Create the refresh_tokens table

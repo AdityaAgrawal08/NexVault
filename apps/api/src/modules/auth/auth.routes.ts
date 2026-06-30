@@ -52,6 +52,12 @@ router.post(
 );
 
 router.post(
+  "/recover",
+  authLimiter,
+  authController.recoverAccount.bind(authController),
+);
+
+router.post(
   "/oauth/login",
   authLimiter,
   authController.socialLogin.bind(authController),
@@ -108,11 +114,18 @@ router.post(
   authController.verifyAndChangeEmail.bind(authController),
 );
 
-router.delete(
-  "/profile",
+router.post(
+  "/profile/delete/request",
   authMiddleware,
   reauthMiddleware,
-  authController.deleteAccount.bind(authController),
+  authController.requestAccountDeletion.bind(authController),
+);
+
+router.post(
+  "/profile/delete/confirm",
+  authMiddleware,
+  reauthMiddleware,
+  authController.confirmAccountDeletion.bind(authController),
 );
 
 router.post(

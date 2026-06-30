@@ -8,6 +8,7 @@ import { app } from "./app";
 import { initializeUsernameBloomFilter } from "../modules/auth/username-bloom-filter";
 import { initializeDatabase } from "../core/database/init";
 import { emailWorker } from "../modules/email/email.worker";
+import { deletionWorker } from "../modules/auth/deletion.worker";
 import { db } from "../core/database/postgres";
 
 const port = Number(process.env.PORT);
@@ -20,8 +21,9 @@ async function startServer() {
   await initializeDatabase();
   await initializeUsernameBloomFilter();
   
-  // Start background email worker
+  // Start background workers
   emailWorker.start();
+  deletionWorker.start();
 
   const server = app.listen(port, () => {
     console.log(`Server running on ${port}`);
@@ -35,8 +37,9 @@ async function startServer() {
       console.log("[Server] Express server closed.");
     });
 
-    // Stop background email worker
+    // Stop background workers
     emailWorker.stop();
+    deletionWorker.stop();
 
     // Close database connection pool
     try {

@@ -28,6 +28,8 @@ export type UserRecord = {
   role: string;
   failedLoginAttempts: number;
   lockedUntil: Date | null;
+  deletedAt: Date | null;
+  deletionScheduledFor: Date | null;
   createdAt: Date;
   updatedAt: Date;
 };

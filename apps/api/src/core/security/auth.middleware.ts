@@ -44,8 +44,18 @@ export async function authMiddleware(
     }
 
     const payload = verifyAccessToken(token);
+
+    // 2. Validate session is still active in sessionStore
+    const isSessionActive = await sessionStore.isSessionActive(payload.tokenId);
+    if (!isSessionActive) {
+      return next(new AppError({
+        message: "Your session has been revoked or is no longer active. Please log in again.",
+        statusCode: 401,
+        code: "AUTH_SESSION_REVOKED",
+      }));
+    }
     
-    // 2. Impossible Travel / Geo-Velocity Check
+    // 3. Impossible Travel / Geo-Velocity Check
     const ip = (req.headers["x-simulated-ip"] as string) || req.ip || req.socket.remoteAddress || "unknown";
     const travelResult = await geoVelocityService.checkTravel(payload.userId, payload.tokenId, ip);
     

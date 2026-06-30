@@ -172,7 +172,7 @@ class AuthService {
 
   // --- Login & Session ---
   public async login(
-    input: LoginRequest,
+    input: LoginRequest & { force?: boolean },
     ipAddress?: string,
     userAgent?: string,
     deviceFingerprint?: string,
@@ -181,7 +181,30 @@ class AuthService {
       ? await authRepository.findUserByEmail(input.identifier)
       : await authRepository.findUserByUsername(input.identifier);
 
-    // Check Account Lockout
+    // 1. Check if Account is Pending Deletion (Grace Period Check)
+    if (user.deletedAt) {
+      if (user.deletionScheduledFor && new Date() >= new Date(user.deletionScheduledFor)) {
+        // Deletion grace period has expired, treat as not found
+        throw new UserNotFoundError();
+      }
+
+      // Check password first before sending recovery OTP to prevent email spam/probing
+      const isPasswordValid = await verifyPassword(input.password, user.passwordHash);
+      if (!isPasswordValid) {
+        throw new InvalidCredentialsError();
+      }
+
+      // Automatically send recovery OTP
+      await otpService.sendOTP(user.email, OTPPurpose.REAUTHENTICATION, user.username);
+
+      throw new AppError({
+        message: "This account is scheduled for deletion. A verification code has been sent to your email to recover your account.",
+        statusCode: 403,
+        code: "AUTH_ACCOUNT_PENDING_DELETION",
+      });
+    }
+
+    // 2. Check Account Lockout
     if (user.lockedUntil && new Date() < new Date(user.lockedUntil)) {
       const lockRemainingSeconds = Math.ceil((new Date(user.lockedUntil).getTime() - Date.now()) / 1000);
       
@@ -236,6 +259,42 @@ class AuthService {
         message: "Email address has not been verified.",
         statusCode: 403,
         code: "AUTH_EMAIL_NOT_VERIFIED",
+      });
+    }
+
+    // 3. Single Active Session Enforcement
+    const activeSessions = await authRepository.findActiveSessionsForUser(user.id);
+    if (activeSessions.length > 0 && !input.force) {
+      await auditService.log({
+        userId: user.id,
+        action: "LOGIN_BLOCKED_SESSION_EXISTS",
+        ipAddress,
+        userAgent,
+      });
+
+      throw new AppError({
+        message: "An active session already exists on another device.",
+        statusCode: 409,
+        code: "AUTH_SESSION_ALREADY_ACTIVE",
+      });
+    }
+
+    if (activeSessions.length > 0 && input.force) {
+      // Option 2: Log out everywhere and continue
+      await auditService.log({
+        userId: user.id,
+        action: "GLOBAL_LOGOUT_INITIATED",
+        ipAddress,
+        userAgent,
+      });
+
+      await sessionStore.invalidateAllUserSessions(user.id);
+
+      await auditService.log({
+        userId: user.id,
+        action: "GLOBAL_LOGOUT_COMPLETED",
+        ipAddress,
+        userAgent,
       });
     }
 
@@ -294,6 +353,105 @@ class AuthService {
     });
 
     return this.generateReauthToken(userId);
+  }
+
+  // --- Secure Account Deletion & Recovery ---
+  public async requestAccountDeletion(userId: string): Promise<void> {
+    const user = await authRepository.findUserById(userId);
+    await otpService.sendOTP(user.email, OTPPurpose.EMAIL_VERIFICATION, user.username);
+
+    await auditService.log({
+      userId,
+      action: "ACCOUNT_DELETION_REQUESTED",
+    });
+  }
+
+  public async confirmAccountDeletion(
+    userId: string,
+    otp: string,
+    activeAccessToken?: string,
+  ): Promise<void> {
+    const user = await authRepository.findUserById(userId);
+    await otpService.verifyOTP(user.email, OTPPurpose.EMAIL_VERIFICATION, otp);
+
+    const retentionHours = parseInt(process.env["ACCOUNT_DELETION_RETENTION_HOURS"] || "24", 10);
+    const scheduledFor = new Date(Date.now() + retentionHours * 60 * 60 * 1000);
+
+    // Schedule deletion in DB
+    await authRepository.scheduleAccountDeletion(userId, scheduledFor);
+
+    // Revoke all active sessions
+    await sessionStore.invalidateAllUserSessions(userId);
+
+    // Blocklist current access token
+    if (activeAccessToken) {
+      await this.blocklistAccessToken(activeAccessToken);
+    }
+
+    // Send confirmation email (grace period notification)
+    await emailService.enqueue(user.email, EmailType.GENERAL_ANNOUNCEMENT, {
+      title: "Account Scheduled for Deletion",
+      content: `Hello ${user.username},\n\nYour NexVault account has been scheduled for deletion. It will be permanently deleted on ${scheduledFor.toUTCString()}.\n\nIf this was not authorized, you can recover your account at any time before this date by logging in with your credentials.`,
+    });
+
+    await auditService.log({
+      userId,
+      action: "ACCOUNT_ENTERED_PENDING_DELETION",
+      metadata: { scheduledFor },
+    });
+  }
+
+  public async recoverAccount(
+    email: string,
+    otp: string,
+    newPassword?: string,
+    ipAddress?: string,
+    userAgent?: string,
+    deviceFingerprint?: string,
+  ): Promise<LoginResult> {
+    const user = await authRepository.findUserByEmail(email);
+
+    if (!user.deletedAt) {
+      throw new AppError({
+        message: "Account is not scheduled for deletion.",
+        statusCode: 400,
+        code: "AUTH_ACCOUNT_NOT_PENDING_DELETION",
+      });
+    }
+
+    // Verify OTP
+    await otpService.verifyOTP(user.email, OTPPurpose.REAUTHENTICATION, otp);
+
+    // Cancel deletion in DB
+    await authRepository.cancelAccountDeletion(user.id);
+
+    // Optional password reset
+    if (newPassword) {
+      const passwordHash = await hashPassword(newPassword);
+      await authRepository.updateUserPassword(user.id, passwordHash);
+    }
+
+    // Send recovery confirmation email
+    await emailService.enqueue(user.email, EmailType.GENERAL_ANNOUNCEMENT, {
+      title: "Account Deletion Cancelled",
+      content: `Hello ${user.username},\n\nYour NexVault account deletion has been cancelled. Your account has been successfully restored to its active state.`,
+    });
+
+    await auditService.log({
+      userId: user.id,
+      action: "ACCOUNT_DELETION_CANCELLED",
+      ipAddress,
+      userAgent,
+    });
+
+    await auditService.log({
+      userId: user.id,
+      action: "RECOVERY_COMPLETED",
+      ipAddress,
+      userAgent,
+    });
+
+    return this.generateUserSession(user, ipAddress, userAgent, deviceFingerprint);
   }
 
   // --- Sensitive Operations ---
@@ -438,6 +596,7 @@ class AuthService {
     ipAddress?: string,
     userAgent?: string,
     deviceFingerprint?: string,
+    force?: boolean,
   ): Promise<LoginResult> {
     let user: any;
     try {
@@ -499,6 +658,20 @@ class AuthService {
       } else {
         throw err;
       }
+    }
+
+    // Single active session check for OAuth
+    const activeSessions = await authRepository.findActiveSessionsForUser(user.id);
+    if (activeSessions.length > 0 && !force) {
+      throw new AppError({
+        message: "An active session already exists on another device.",
+        statusCode: 409,
+        code: "AUTH_SESSION_ALREADY_ACTIVE",
+      });
+    }
+
+    if (activeSessions.length > 0 && force) {
+      await sessionStore.invalidateAllUserSessions(user.id);
     }
 
     return this.generateUserSession(user, ipAddress, userAgent, deviceFingerprint);
@@ -664,6 +837,7 @@ class AuthService {
 
   public async revokeSession(tokenId: string, userId: string): Promise<void> {
     await sessionStore.invalidateSession(tokenId);
+    
     await auditService.log({
       userId,
       action: "SESSION_REVOKED",
@@ -673,6 +847,7 @@ class AuthService {
 
   public async revokeOtherSessions(userId: string, currentTokenId: string): Promise<void> {
     await sessionStore.invalidateOtherSessions(userId, currentTokenId);
+    
     await auditService.log({
       userId,
       action: "ALL_OTHER_SESSIONS_REVOKED",
@@ -726,6 +901,12 @@ class AuthService {
     const refreshToken = generateRefreshToken({
       userId: user.id,
       tokenId: dbToken.id,
+    });
+
+    await auditService.log({
+      userId: user.id,
+      action: "NEW_SESSION_CREATED",
+      metadata: { tokenId: dbToken.id },
     });
 
     return {

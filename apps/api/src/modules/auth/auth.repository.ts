@@ -130,6 +130,8 @@ export class AuthRepository {
           role,
           failed_login_attempts AS "failedLoginAttempts",
           locked_until AS "lockedUntil",
+          deleted_at AS "deletedAt",
+          deletion_scheduled_for AS "deletionScheduledFor",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM users
@@ -165,6 +167,8 @@ export class AuthRepository {
           role,
           failed_login_attempts AS "failedLoginAttempts",
           locked_until AS "lockedUntil",
+          deleted_at AS "deletedAt",
+          deletion_scheduled_for AS "deletionScheduledFor",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM users
@@ -200,6 +204,8 @@ export class AuthRepository {
           role,
           failed_login_attempts AS "failedLoginAttempts",
           locked_until AS "lockedUntil",
+          deleted_at AS "deletedAt",
+          deletion_scheduled_for AS "deletionScheduledFor",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM users
@@ -235,6 +241,8 @@ export class AuthRepository {
           role,
           failed_login_attempts AS "failedLoginAttempts",
           locked_until AS "lockedUntil",
+          deleted_at AS "deletedAt",
+          deletion_scheduled_for AS "deletionScheduledFor",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM users
@@ -626,6 +634,32 @@ export class AuthRepository {
         WHERE id = $3
       `,
       [enabled, secret, userId],
+    );
+  }
+
+  public async scheduleAccountDeletion(userId: string, scheduledFor: Date): Promise<void> {
+    await db.query(
+      `
+        UPDATE users
+        SET deleted_at = NOW(),
+            deletion_scheduled_for = $1,
+            updated_at = NOW()
+        WHERE id = $2
+      `,
+      [scheduledFor, userId]
+    );
+  }
+
+  public async cancelAccountDeletion(userId: string): Promise<void> {
+    await db.query(
+      `
+        UPDATE users
+        SET deleted_at = NULL,
+            deletion_scheduled_for = NULL,
+            updated_at = NOW()
+        WHERE id = $1
+      `,
+      [userId]
     );
   }
 }

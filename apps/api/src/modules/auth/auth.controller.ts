@@ -407,17 +407,64 @@ class AuthController {
     });
   });
 
-  public deleteAccount = asyncHandler(async (
+  public requestAccountDeletion = asyncHandler(async (
     req: any,
     res: Response,
   ) => {
     const userId = req.user.userId;
-    await authService.deleteAccount(userId);
+    await authService.requestAccountDeletion(userId);
+
+    return res.status(200).json({
+      message: "A verification code has been sent to your email to confirm account deletion.",
+    });
+  });
+
+  public confirmAccountDeletion = asyncHandler(async (
+    req: any,
+    res: Response,
+  ) => {
+    const userId = req.user.userId;
+    const { otp } = req.body;
+    const accessToken = req.token;
+
+    if (typeof otp !== "string") {
+      return res.status(400).json({ message: "Verification code is required." });
+    }
+
+    await authService.confirmAccountDeletion(userId, otp, accessToken);
 
     res.clearCookie("refreshToken", CLEAR_COOKIE_OPTIONS);
 
     return res.status(200).json({
-      message: "Account deleted successfully.",
+      message: "Account successfully scheduled for deletion. You have been logged out.",
+    });
+  });
+
+  public recoverAccount = asyncHandler(async (
+    req: Request,
+    res: Response,
+  ) => {
+    const { email, otp, newPassword } = req.body;
+    if (typeof email !== "string" || typeof otp !== "string") {
+      return res.status(400).json({
+        message: "Email and verification code are required.",
+      });
+    }
+
+    const ip = req.ip || req.socket.remoteAddress || undefined;
+    const ua = req.headers["user-agent"] || undefined;
+    const fingerprint = req.headers["x-device-fingerprint"] as string | undefined;
+
+    const result = await authService.recoverAccount(email, otp, newPassword, ip, ua, fingerprint);
+
+    res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
+
+    return res.status(200).json({
+      message: "Account recovered successfully.",
+      data: {
+        user: result.user,
+        accessToken: result.accessToken,
+      },
     });
   });
 
