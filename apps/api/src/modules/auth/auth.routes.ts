@@ -96,6 +96,32 @@ router.post(
   authController.logout.bind(authController),
 );
 
+// --- Active Session Management ---
+router.get(
+  "/sessions",
+  authMiddleware,
+  authController.getSessions.bind(authController),
+);
+
+router.delete(
+  "/sessions/:sessionId",
+  authMiddleware,
+  authController.revokeSession.bind(authController),
+);
+
+router.post(
+  "/sessions/revoke-others",
+  authMiddleware,
+  authController.revokeOtherSessions.bind(authController),
+);
+
+// --- Security Audit Logs ---
+router.get(
+  "/audit-logs",
+  authMiddleware,
+  authController.getAuditLogs.bind(authController),
+);
+
 router.get(
   "/metrics/email",
   authController.getEmailMetrics.bind(authController),

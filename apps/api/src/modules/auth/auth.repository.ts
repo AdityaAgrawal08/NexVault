@@ -22,6 +22,8 @@ export interface RefreshTokenRecord {
   createdAt: Date;
   isRevoked: boolean;
   replacedBy: string | null;
+  ipAddress: string | null;
+  userAgent: string | null;
 }
 
 export class AuthRepository {
@@ -36,6 +38,9 @@ export class AuthRepository {
     } = input;
 
     try {
+      // Determine role: if username is "Admin" or "aditya", make them ADMIN
+      const role = (username.toLowerCase() === "admin" || username.toLowerCase() === "aditya") ? "ADMIN" : "USER";
+
       const { rows } = await db.query<CreateUserResult>(
         `
           INSERT INTO users (
@@ -43,20 +48,23 @@ export class AuthRepository {
             email,
             phone_number,
             password,
-            is_verified
+            is_verified,
+            role
           )
           VALUES (
             $1,
             $2,
             $3,
             $4,
-            FALSE
+            FALSE,
+            $5
           )
           RETURNING
             id,
             username,
             email,
             phone_number AS "phoneNumber",
+            role,
             created_at AS "createdAt"
         `,
         [
@@ -64,6 +72,7 @@ export class AuthRepository {
           email,
           phoneNumber,
           passwordHash,
+          role,
         ],
       );
 
@@ -114,6 +123,9 @@ export class AuthRepository {
           is_verified AS "isVerified",
           two_factor_secret AS "twoFactorSecret",
           two_factor_enabled AS "twoFactorEnabled",
+          role,
+          failed_login_attempts AS "failedLoginAttempts",
+          locked_until AS "lockedUntil",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM users
@@ -146,6 +158,9 @@ export class AuthRepository {
           is_verified AS "isVerified",
           two_factor_secret AS "twoFactorSecret",
           two_factor_enabled AS "twoFactorEnabled",
+          role,
+          failed_login_attempts AS "failedLoginAttempts",
+          locked_until AS "lockedUntil",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM users
@@ -178,6 +193,9 @@ export class AuthRepository {
           is_verified AS "isVerified",
           two_factor_secret AS "twoFactorSecret",
           two_factor_enabled AS "twoFactorEnabled",
+          role,
+          failed_login_attempts AS "failedLoginAttempts",
+          locked_until AS "lockedUntil",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM users
@@ -210,6 +228,9 @@ export class AuthRepository {
           is_verified AS "isVerified",
           two_factor_secret AS "twoFactorSecret",
           two_factor_enabled AS "twoFactorEnabled",
+          role,
+          failed_login_attempts AS "failedLoginAttempts",
+          locked_until AS "lockedUntil",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM users
@@ -250,9 +271,44 @@ export class AuthRepository {
     return rows.map((row) => row.username);
   }
 
+  // --- Lockout Management ---
+  public async incrementFailedAttempts(
+    userId: string,
+  ): Promise<{ failedLoginAttempts: number; lockedUntil: Date | null }> {
+    const { rows } = await db.query<any>(
+      `
+        UPDATE users
+        SET failed_login_attempts = failed_login_attempts + 1,
+            locked_until = CASE 
+              WHEN failed_login_attempts + 1 >= 5 THEN NOW() + INTERVAL '15 minutes'
+              ELSE NULL
+            END
+        WHERE id = $1
+        RETURNING failed_login_attempts AS "failedLoginAttempts", locked_until AS "lockedUntil"
+      `,
+      [userId]
+    );
+    return rows[0];
+  }
+
+  public async resetFailedAttempts(userId: string): Promise<void> {
+    await db.query(
+      `
+        UPDATE users
+        SET failed_login_attempts = 0,
+            locked_until = NULL
+        WHERE id = $1
+      `,
+      [userId]
+    );
+  }
+
+  // --- Refresh Token & Session Management ---
   public async createRefreshToken(
     userId: string,
     expiresAt: Date,
+    ipAddress?: string | null,
+    userAgent?: string | null,
   ): Promise<{ id: string; rawToken: string }> {
     const rawToken = crypto.randomBytes(40).toString("hex");
     const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
@@ -262,12 +318,14 @@ export class AuthRepository {
         INSERT INTO refresh_tokens (
           user_id,
           token_hash,
-          expires_at
+          expires_at,
+          ip_address,
+          user_agent
         )
-        VALUES ($1, $2, $3)
+        VALUES ($1, $2, $3, $4, $5)
         RETURNING id
       `,
-      [userId, tokenHash, expiresAt],
+      [userId, tokenHash, expiresAt, ipAddress || null, userAgent || null],
     );
 
     const firstRow = rows[0];
@@ -295,7 +353,9 @@ export class AuthRepository {
           expires_at AS "expiresAt",
           created_at AS "createdAt",
           is_revoked AS "isRevoked",
-          replaced_by AS "replacedBy"
+          replaced_by AS "replacedBy",
+          ip_address AS "ipAddress",
+          user_agent AS "userAgent"
         FROM refresh_tokens
         WHERE token_hash = $1
         LIMIT 1
@@ -318,7 +378,9 @@ export class AuthRepository {
           expires_at AS "expiresAt",
           created_at AS "createdAt",
           is_revoked AS "isRevoked",
-          replaced_by AS "replacedBy"
+          replaced_by AS "replacedBy",
+          ip_address AS "ipAddress",
+          user_agent AS "userAgent"
         FROM refresh_tokens
         WHERE id = $1
         LIMIT 1
@@ -355,6 +417,8 @@ export class AuthRepository {
     oldTokenId: string,
     userId: string,
     expiresAt: Date,
+    ipAddress?: string | null,
+    userAgent?: string | null,
   ): Promise<{ id: string; rawToken: string }> {
     const rawToken = crypto.randomBytes(40).toString("hex");
     const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
@@ -368,12 +432,14 @@ export class AuthRepository {
           INSERT INTO refresh_tokens (
             user_id,
             token_hash,
-            expires_at
+            expires_at,
+            ip_address,
+            user_agent
           )
-          VALUES ($1, $2, $3)
+          VALUES ($1, $2, $3, $4, $5)
           RETURNING id
         `,
-        [userId, tokenHash, expiresAt],
+        [userId, tokenHash, expiresAt, ipAddress || null, userAgent || null],
       );
       const firstRow = rows[0];
       if (!firstRow) {
@@ -403,6 +469,46 @@ export class AuthRepository {
     } finally {
       client.release();
     }
+  }
+
+  public async findActiveSessionsForUser(userId: string): Promise<any[]> {
+    const { rows } = await db.query(
+      `
+        SELECT
+          id,
+          ip_address AS "ipAddress",
+          user_agent AS "userAgent",
+          created_at AS "createdAt",
+          expires_at AS "expiresAt"
+        FROM refresh_tokens
+        WHERE user_id = $1 AND is_revoked = FALSE AND expires_at > NOW()
+        ORDER BY created_at DESC
+      `,
+      [userId]
+    );
+    return rows;
+  }
+
+  public async revokeSession(tokenId: string, userId: string): Promise<void> {
+    await db.query(
+      `
+        UPDATE refresh_tokens
+        SET is_revoked = TRUE
+        WHERE id = $1 AND user_id = $2
+      `,
+      [tokenId, userId]
+    );
+  }
+
+  public async revokeOtherSessions(userId: string, currentTokenId: string): Promise<void> {
+    await db.query(
+      `
+        UPDATE refresh_tokens
+        SET is_revoked = TRUE
+        WHERE user_id = $1 AND id <> $2
+      `,
+      [userId, currentTokenId]
+    );
   }
 
   // OTP Management

@@ -19,6 +19,7 @@ import {
 import { generateSecret, verifyTOTP } from "../../core/security/totp";
 import { emailService } from "../email/email.service";
 import { EmailType } from "../email/email.types";
+import { auditService } from "../audit/audit.service";
 
 import { AppError } from "../../shared/errors/app-error";
 
@@ -142,6 +143,13 @@ class AuthService {
       username: user.username,
     });
 
+    // Log registration
+    await auditService.log({
+      userId: user.id,
+      action: "ACCOUNT_CREATED",
+      metadata: { username: user.username, email: user.email },
+    });
+
     usernameBloomFilter.add(user.username.toLowerCase());
     return user;
   }
@@ -149,6 +157,8 @@ class AuthService {
   // --- Login & Session ---
   public async login(
     input: LoginRequest,
+    ipAddress?: string,
+    userAgent?: string,
   ): Promise<
     | LoginResult
     | { mfaRequired: true; mfaToken: string }
@@ -158,14 +168,55 @@ class AuthService {
       ? await authRepository.findUserByEmail(input.identifier)
       : await authRepository.findUserByUsername(input.identifier);
 
+    // Check Account Lockout
+    if (user.lockedUntil && new Date() < new Date(user.lockedUntil)) {
+      const lockRemainingSeconds = Math.ceil((new Date(user.lockedUntil).getTime() - Date.now()) / 1000);
+      
+      await auditService.log({
+        userId: user.id,
+        action: "LOGIN_BLOCKED_LOCKED",
+        ipAddress,
+        userAgent,
+        metadata: { lockRemainingSeconds },
+      });
+
+      throw new AppError({
+        message: `Account is temporarily locked due to too many failed login attempts. Please try again in ${Math.ceil(lockRemainingSeconds / 60)} minutes.`,
+        statusCode: 423,
+        code: "AUTH_ACCOUNT_LOCKED",
+      });
+    }
+
     const isPasswordValid = await verifyPassword(
       input.password,
       user.passwordHash,
     );
 
     if (!isPasswordValid) {
+      // Increment failed attempts and potentially lock account
+      const lockoutStatus = await authRepository.incrementFailedAttempts(user.id);
+      
+      await auditService.log({
+        userId: user.id,
+        action: lockoutStatus.lockedUntil ? "ACCOUNT_LOCKED" : "LOGIN_FAILED",
+        ipAddress,
+        userAgent,
+        metadata: { attempts: lockoutStatus.failedLoginAttempts },
+      });
+
+      if (lockoutStatus.lockedUntil) {
+        throw new AppError({
+          message: "Account has been locked for 15 minutes due to 5 consecutive failed login attempts.",
+          statusCode: 423,
+          code: "AUTH_ACCOUNT_LOCKED",
+        });
+      }
+
       throw new InvalidCredentialsError();
     }
+
+    // Reset failed login attempts on successful password check
+    await authRepository.resetFailedAttempts(user.id);
 
     // Prevent login if account is not verified
     if (!user.isVerified) {
@@ -208,6 +259,8 @@ class AuthService {
   public async verify2FALogin(
     mfaToken: string,
     code: string,
+    ipAddress?: string,
+    userAgent?: string,
   ): Promise<LoginResult> {
     let payload: { userId: string; type: string };
     try {
@@ -230,6 +283,13 @@ class AuthService {
 
     const user = await authRepository.findUserById(payload.userId);
     if (!user.twoFactorSecret || !verifyTOTP(user.twoFactorSecret, code)) {
+      await auditService.log({
+        userId: user.id,
+        action: "MFA_VERIFICATION_FAILED",
+        ipAddress,
+        userAgent,
+      });
+
       throw new AppError({
         message: "Invalid authenticator code.",
         statusCode: 401,
@@ -237,13 +297,23 @@ class AuthService {
       });
     }
 
-    return this.generateUserSession(user);
+    // Log successful login
+    await auditService.log({
+      userId: user.id,
+      action: "LOGIN_SUCCESS",
+      ipAddress,
+      userAgent,
+    });
+
+    return this.generateUserSession(user, ipAddress, userAgent);
   }
 
   public async verifyAndSetup2FA(
     mfaToken: string,
     secret: string,
     code: string,
+    ipAddress?: string,
+    userAgent?: string,
   ): Promise<LoginResult> {
     let payload: { userId: string; type: string };
     try {
@@ -282,10 +352,18 @@ class AuthService {
     await emailService.enqueue(user.email, EmailType.SECURITY_ALERT, {
       username: user.username,
       alertMessage: "Two-Factor Authentication has been enabled on your account.",
-      ipAddress: "Unknown",
+      ipAddress: ipAddress || "Unknown",
     });
 
-    return this.generateUserSession(user);
+    // Log MFA enrollment
+    await auditService.log({
+      userId: user.id,
+      action: "MFA_ENABLED",
+      ipAddress,
+      userAgent,
+    });
+
+    return this.generateUserSession(user, ipAddress, userAgent);
   }
 
   // --- 2FA Management ---
@@ -339,6 +417,11 @@ class AuthService {
         username: user.username,
         resetLink,
       });
+
+      await auditService.log({
+        userId: user.id,
+        action: "PASSWORD_RESET_REQUESTED",
+      });
     } catch (error) {
       // Silently ignore UserNotFoundError to prevent email enumeration
       if (!(error instanceof UserNotFoundError)) {
@@ -384,6 +467,11 @@ class AuthService {
       subject: "Your password has been changed",
       message: "This is a confirmation that the password for your NexVault account has been successfully changed.",
     });
+
+    await auditService.log({
+      userId: user.id,
+      action: "PASSWORD_RESET_SUCCESS",
+    });
   }
 
   // --- Verify Email ---
@@ -417,6 +505,8 @@ class AuthService {
   public async socialLogin(
     provider: "google" | "github",
     profile: { id: string; email: string; username: string },
+    ipAddress?: string,
+    userAgent?: string,
   ): Promise<LoginResult> {
     let user: any;
     try {
@@ -449,6 +539,12 @@ class AuthService {
         // Enqueue welcome email for social login
         await emailService.enqueue(user.email, EmailType.WELCOME, {
           username: user.username,
+        });
+
+        await auditService.log({
+          userId: user.id,
+          action: "ACCOUNT_CREATED",
+          metadata: { provider, method: "oauth" },
         });
       } else {
         throw err;
@@ -490,6 +586,8 @@ class AuthService {
   // --- Refresh Session ---
   public async refresh(
     refreshToken: string,
+    ipAddress?: string,
+    userAgent?: string,
   ): Promise<LoginResult> {
     let payload: RefreshTokenPayload;
     try {
@@ -516,6 +614,14 @@ class AuthService {
     if (tokenRecord.isRevoked) {
       if (tokenRecord.replacedBy) {
         await authRepository.revokeAllUserRefreshTokens(tokenRecord.userId);
+        
+        await auditService.log({
+          userId: tokenRecord.userId,
+          action: "REFRESH_TOKEN_REUSE_DETECTED",
+          ipAddress,
+          userAgent,
+        });
+
         throw new AppError({
           message: "Refresh token reuse detected. All sessions revoked.",
           statusCode: 401,
@@ -545,13 +651,16 @@ class AuthService {
     const newToken = await authRepository.replaceRefreshToken(
       tokenRecord.id,
       user.id,
-      refreshExpiresAt
+      refreshExpiresAt,
+      ipAddress,
+      userAgent
     );
 
     const newAccessToken = generateAccessToken({
       userId: user.id,
       username: user.username,
       email: user.email,
+      role: user.role,
     });
 
     const newRefreshToken = generateRefreshToken({
@@ -565,6 +674,7 @@ class AuthService {
         username: user.username,
         email: user.email,
         phoneNumber: user.phoneNumber,
+        role: user.role,
       },
       accessToken: newAccessToken,
       refreshToken: newRefreshToken,
@@ -580,23 +690,56 @@ class AuthService {
     }
   }
 
+  // --- Active Session Management ---
+  public async getActiveSessions(userId: string): Promise<any[]> {
+    return authRepository.findActiveSessionsForUser(userId);
+  }
+
+  public async revokeSession(tokenId: string, userId: string): Promise<void> {
+    await authRepository.revokeSession(tokenId, userId);
+    await auditService.log({
+      userId,
+      action: "SESSION_REVOKED",
+      metadata: { revokedSessionId: tokenId },
+    });
+  }
+
+  public async revokeOtherSessions(userId: string, currentTokenId: string): Promise<void> {
+    await authRepository.revokeOtherSessions(userId, currentTokenId);
+    await auditService.log({
+      userId,
+      action: "ALL_OTHER_SESSIONS_REVOKED",
+    });
+  }
+
   // --- Helper: Generate Session ---
-  private async generateUserSession(user: UserRecord): Promise<LoginResult> {
+  private async generateUserSession(
+    user: UserRecord,
+    ipAddress?: string,
+    userAgent?: string,
+  ): Promise<LoginResult> {
     const authenticatedUser: AuthenticatedUser = {
       id: user.id,
       username: user.username,
       email: user.email,
       phoneNumber: user.phoneNumber,
+      role: user.role,
     };
 
     const accessToken = generateAccessToken({
       userId: user.id,
       username: user.username,
       email: user.email,
+      role: user.role,
     });
 
     const refreshExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-    const dbToken = await authRepository.createRefreshToken(user.id, refreshExpiresAt);
+    const dbToken = await authRepository.createRefreshToken(
+      user.id,
+      refreshExpiresAt,
+      ipAddress,
+      userAgent
+    );
 
     const refreshToken = generateRefreshToken({
       userId: user.id,

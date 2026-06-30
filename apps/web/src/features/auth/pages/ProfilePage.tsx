@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate, Navigate } from "react-router-dom";
+import { useNavigate, Navigate, Link } from "react-router-dom";
 import { apiRequest, clearSession } from "@/shared/utils/apiClient";
 
 interface UserSession {
@@ -7,6 +7,7 @@ interface UserSession {
   username: string;
   email: string;
   phoneNumber: string;
+  role?: string;
   twoFactorEnabled?: boolean;
 }
 
@@ -69,6 +70,13 @@ export default function ProfilePage() {
           </div>
 
           <div className="profile-field">
+            <span className="profile-field-label">Account Role</span>
+            <span className="profile-field-value" style={{ textTransform: "capitalize", fontWeight: "600", color: "var(--color-accent)" }}>
+              {user.role?.toLowerCase() || "user"}
+            </span>
+          </div>
+
+          <div className="profile-field">
             <span className="profile-field-label">Two-Factor Authentication</span>
             <span className="profile-field-value" style={{ color: "var(--color-success)" }}>
               Active (Enforced)
@@ -76,18 +84,33 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        {/* MFA Mandatory Status Area */}
-        <div className="mfa-section" style={{
+        {/* Sessions & Security Management Area */}
+        <div style={{
           marginTop: "1.5rem",
           paddingTop: "1.5rem",
           borderTop: "1px solid rgba(255, 255, 255, 0.08)",
           textAlign: "left",
           width: "100%",
+          display: "flex",
+          flexDirection: "column",
+          gap: "1rem",
         }}>
-          <h3 style={{ fontSize: "15px", fontWeight: "600", marginBottom: "0.5rem", color: "var(--color-foreground)" }}>
-            Two-Factor Authentication (2FA)
+          <h3 style={{ fontSize: "15px", fontWeight: "600", margin: 0, color: "var(--color-foreground)" }}>
+            Security Settings
           </h3>
           
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: "13px", color: "var(--color-muted)" }}>Active Sessions & Devices</span>
+            <Link to="/sessions" style={{
+              fontSize: "13px",
+              color: "var(--color-accent)",
+              textDecoration: "none",
+              fontWeight: "600",
+            }}>
+              Manage Sessions →
+            </Link>
+          </div>
+
           <div style={{
             background: "rgba(16, 185, 129, 0.04)",
             border: "1px solid rgba(16, 185, 129, 0.15)",

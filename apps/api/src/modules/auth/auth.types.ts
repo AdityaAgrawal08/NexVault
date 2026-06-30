@@ -25,6 +25,9 @@ export type UserRecord = {
   isVerified: boolean;
   twoFactorSecret: string | null;
   twoFactorEnabled: boolean;
+  role: string;
+  failedLoginAttempts: number;
+  lockedUntil: Date | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -47,6 +50,7 @@ export type AuthenticatedUser = {
   username: string;
   email: string;
   phoneNumber: string;
+  role: string;
 };
 
 export type LoginResult = {

@@ -2,6 +2,7 @@ import type {
   Request,
   Response,
 } from "express";
+import jwt from "jsonwebtoken";
 
 import { registerSchema } from "../../shared/validators/register.validator";
 import { asyncHandler } from "../../shared/errors/async-handler";
@@ -9,6 +10,9 @@ import { authService } from "./auth.service";
 import { usernameBloomFilter } from "./username-bloom-filter";
 import { authRepository } from "./auth.repository";
 import { emailWorker } from "../email/email.worker";
+import { auditService } from "../audit/audit.service";
+import { AppError } from "../../shared/errors/app-error";
+import { verifyRefreshToken } from "../../core/security/jwt";
 
 const COOKIE_OPTIONS = {
   httpOnly: true,
@@ -22,6 +26,24 @@ const CLEAR_COOKIE_OPTIONS = {
   secure: process.env["NODE_ENV"] === "production",
   sameSite: "lax" as const,
 };
+
+// CSRF check for cookie-based endpoints
+function verifyCSRF(req: Request) {
+  const origin = req.headers.origin;
+  const referer = req.headers.referer;
+  
+  const target = origin || referer;
+  if (target) {
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/.test(target);
+    if (!isLocalhost) {
+      throw new AppError({
+        message: "Action blocked by CSRF protection policy.",
+        statusCode: 403,
+        code: "AUTH_CSRF_BLOCK",
+      });
+    }
+  }
+}
 
 class AuthController {
   public checkUsername = asyncHandler(async (
@@ -39,7 +61,6 @@ class AuthController {
 
     const normalizedUsername = username.trim().toLowerCase();
 
-    // Basic format check matching our validator regex
     if (
       normalizedUsername.length < 3 ||
       normalizedUsername.length > 32 ||
@@ -51,7 +72,6 @@ class AuthController {
       });
     }
 
-    // Check the Bloom Filter
     const maybeTaken = usernameBloomFilter.has(normalizedUsername);
     if (!maybeTaken) {
       return res.status(200).json({
@@ -60,7 +80,6 @@ class AuthController {
       });
     }
 
-    // Query database to be certain (handles Bloom Filter false positives)
     try {
       await authRepository.findUserByUsername(normalizedUsername);
       return res.status(200).json({
@@ -136,9 +155,11 @@ class AuthController {
     req: Request,
     res: Response,
   ) => {
-    const result = await authService.login(req.body);
+    const ip = req.ip || req.socket.remoteAddress || undefined;
+    const ua = req.headers["user-agent"] || undefined;
 
-    // If MFA is required or setup is required, return the MFA details
+    const result = await authService.login(req.body, ip, ua);
+
     if ("mfaRequired" in result || "mfaSetupRequired" in result) {
       return res.status(200).json({
         message: "MFA verification required.",
@@ -168,7 +189,10 @@ class AuthController {
       });
     }
 
-    const result = await authService.verify2FALogin(mfaToken, code);
+    const ip = req.ip || req.socket.remoteAddress || undefined;
+    const ua = req.headers["user-agent"] || undefined;
+
+    const result = await authService.verify2FALogin(mfaToken, code, ip, ua);
 
     res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
 
@@ -192,7 +216,10 @@ class AuthController {
       });
     }
 
-    const result = await authService.verifyAndSetup2FA(mfaToken, secret, code);
+    const ip = req.ip || req.socket.remoteAddress || undefined;
+    const ua = req.headers["user-agent"] || undefined;
+
+    const result = await authService.verifyAndSetup2FA(mfaToken, secret, code, ip, ua);
 
     res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
 
@@ -300,11 +327,14 @@ class AuthController {
       });
     }
 
+    const ip = req.ip || req.socket.remoteAddress || undefined;
+    const ua = req.headers["user-agent"] || undefined;
+
     const result = await authService.socialLogin(provider, {
       id: `mock-${provider}-${Date.now()}`,
       email,
       username,
-    });
+    }, ip, ua);
 
     if ("mfaRequired" in result || "mfaSetupRequired" in result) {
       return res.status(200).json({
@@ -328,6 +358,8 @@ class AuthController {
     req: Request,
     res: Response,
   ) => {
+    verifyCSRF(req);
+
     const cookies = req.cookies as Record<string, string | undefined>;
     const token = cookies["refreshToken"];
 
@@ -337,7 +369,10 @@ class AuthController {
       });
     }
 
-    const result = await authService.refresh(token);
+    const ip = req.ip || req.socket.remoteAddress || undefined;
+    const ua = req.headers["user-agent"] || undefined;
+
+    const result = await authService.refresh(token, ip, ua);
 
     res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
 
@@ -354,6 +389,8 @@ class AuthController {
     req: Request,
     res: Response,
   ) => {
+    verifyCSRF(req);
+
     const cookies = req.cookies as Record<string, string | undefined>;
     const token = cookies["refreshToken"];
 
@@ -365,6 +402,114 @@ class AuthController {
 
     return res.status(200).json({
       message: "Logged out successfully.",
+    });
+  });
+
+  // --- Active Session Management ---
+  public getSessions = asyncHandler(async (
+    req: any,
+    res: Response,
+  ) => {
+    const userId = req.user.userId;
+    const sessions = await authService.getActiveSessions(userId);
+    
+    // Parse user agent to extract browser and OS for premium UX
+    const sessionsWithMetadata = sessions.map((s) => {
+      const ua = s.userAgent || "";
+      let browser = "Unknown Browser";
+      let os = "Unknown OS";
+
+      if (ua.includes("Firefox")) browser = "Firefox";
+      else if (ua.includes("Chrome")) browser = "Chrome";
+      else if (ua.includes("Safari")) browser = "Safari";
+      else if (ua.includes("Edge")) browser = "Edge";
+
+      if (ua.includes("Windows")) os = "Windows";
+      else if (ua.includes("Macintosh")) os = "macOS";
+      else if (ua.includes("Linux")) os = "Linux";
+      else if (ua.includes("Android")) os = "Android";
+      else if (ua.includes("iPhone") || ua.includes("iPad")) os = "iOS";
+
+      return {
+        id: s.id,
+        ipAddress: s.ipAddress || "Unknown IP",
+        browser,
+        os,
+        createdAt: s.createdAt,
+        expiresAt: s.expiresAt,
+      };
+    });
+
+    return res.status(200).json({
+      message: "Active sessions retrieved successfully.",
+      data: sessionsWithMetadata,
+    });
+  });
+
+  public revokeSession = asyncHandler(async (
+    req: any,
+    res: Response,
+  ) => {
+    const userId = req.user.userId;
+    const { sessionId } = req.params;
+
+    if (!sessionId) {
+      return res.status(400).json({
+        message: "Session ID is required.",
+      });
+    }
+
+    await authService.revokeSession(sessionId, userId);
+
+    return res.status(200).json({
+      message: "Session revoked successfully.",
+    });
+  });
+
+  public revokeOtherSessions = asyncHandler(async (
+    req: any,
+    res: Response,
+  ) => {
+    const userId = req.user.userId;
+    const cookies = req.cookies as Record<string, string | undefined>;
+    const token = cookies["refreshToken"];
+
+    if (!token) {
+      throw new AppError({
+        message: "Refresh token is missing.",
+        statusCode: 401,
+        code: "AUTH_REFRESH_TOKEN_INVALID",
+      });
+    }
+
+    // Identify current token ID from hash
+    const payload = verifyRefreshToken(token);
+    await authService.revokeOtherSessions(userId, payload.tokenId);
+
+    return res.status(200).json({
+      message: "All other sessions revoked successfully.",
+    });
+  });
+
+  // --- Security Audit Logs ---
+  public getAuditLogs = asyncHandler(async (
+    req: any,
+    res: Response,
+  ) => {
+    // ABAC Check: Regular users can only fetch their own logs. ADMIN/MANAGER can fetch all logs.
+    const userId = req.user.userId;
+    const userRole = req.user.role;
+
+    let logs: any[];
+    if (userRole === "ADMIN" || userRole === "MANAGER") {
+      logs = await auditService.getAllLogs();
+    } else {
+      logs = await auditService.getLogsForUser(userId);
+    }
+
+    return res.status(200).json({
+      message: "Audit logs retrieved successfully.",
+      data: logs,
     });
   });
 
