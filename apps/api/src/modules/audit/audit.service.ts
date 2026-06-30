@@ -9,8 +9,49 @@ export interface AuditLogInput {
 }
 
 class AuditService {
+  private maskEmail(email: string): string {
+    const [local, domain] = email.split("@");
+    if (!local || !domain) return email;
+    if (local.length <= 2) return `${local[0]}***@${domain}`;
+    return `${local[0]}***${local[local.length - 1]}@${domain}`;
+  }
+
+  private maskPhone(phone: string): string {
+    const clean = phone.trim();
+    if (clean.length <= 4) return "****";
+    return "*".repeat(clean.length - 4) + clean.slice(-4);
+  }
+
+  private maskSensitiveData(metadata: any): any {
+    if (!metadata || typeof metadata !== "object") return metadata;
+
+    const copy = { ...metadata };
+    
+    // List of keys to check for masking
+    const emailKeys = ["email", "emailaddress", "email_address", "identifier"];
+    const phoneKeys = ["phone", "phonenumber", "phone_number", "mobile"];
+
+    for (const key of Object.keys(copy)) {
+      const val = copy[key];
+      if (typeof val === "string") {
+        const lowerKey = key.toLowerCase();
+        if (emailKeys.includes(lowerKey) && val.includes("@")) {
+          copy[key] = this.maskEmail(val);
+        } else if (phoneKeys.includes(lowerKey)) {
+          copy[key] = this.maskPhone(val);
+        }
+      } else if (typeof val === "object" && val !== null) {
+        copy[key] = this.maskSensitiveData(val);
+      }
+    }
+
+    return copy;
+  }
+
   public async log(input: AuditLogInput): Promise<void> {
     try {
+      const maskedMetadata = input.metadata ? this.maskSensitiveData(input.metadata) : null;
+
       await db.query(
         `
           INSERT INTO audit_logs (
@@ -27,7 +68,7 @@ class AuditService {
           input.action,
           input.ipAddress || null,
           input.userAgent || null,
-          input.metadata ? JSON.stringify(input.metadata) : null,
+          maskedMetadata ? JSON.stringify(maskedMetadata) : null,
         ]
       );
     } catch (err) {

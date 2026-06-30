@@ -10,6 +10,7 @@ import { authRepository } from "./auth.repository";
 import { db } from "../../core/database/postgres";
 import { usernameBloomFilter } from "./username-bloom-filter";
 import { sessionStore } from "./session.store";
+import { tokenBlocklistStore } from "../../core/security/blocklist.store";
 
 import {
   generateAccessToken,
@@ -44,6 +45,39 @@ import type {
 const JWT_SECRET = process.env.JWT_SECRET || "super-secure-dev-jwt-secret-key-123456";
 
 class AuthService {
+  // --- Device Fingerprint Helper ---
+  private getDeviceFingerprintHash(
+    userAgent?: string,
+    ipAddress?: string,
+    headerFingerprint?: string,
+  ): string {
+    if (headerFingerprint) {
+      return crypto.createHash("sha256").update(headerFingerprint).digest("hex");
+    }
+    const ua = userAgent || "unknown-ua";
+    const ip = ipAddress || "unknown-ip";
+    // Mask IP to subnet level to prevent minor IP changes from blocking the user
+    const ipSubnet = ip.split(".").slice(0, 3).join(".");
+    return crypto.createHash("sha256").update(`${ua}:${ipSubnet}`).digest("hex");
+  }
+
+  // --- Access Token Blocklisting Helper ---
+  public async blocklistAccessToken(token: string): Promise<void> {
+    try {
+      const parts = token.split(".");
+      const signature = parts[2];
+      if (!signature) return;
+
+      const decoded = jwt.decode(token) as any;
+      if (decoded && decoded.exp) {
+        const ttlSeconds = Math.max(1, decoded.exp - Math.floor(Date.now() / 1000));
+        await tokenBlocklistStore.blocklistToken(signature, ttlSeconds);
+      }
+    } catch (err) {
+      console.error("[AuthService] Failed to blocklist access token:", err);
+    }
+  }
+
   // --- OTP Verification ---
   public async sendOTP(email: string): Promise<void> {
     await otpService.sendOTP(email, OTPPurpose.EMAIL_VERIFICATION);
@@ -120,6 +154,7 @@ class AuthService {
     input: LoginRequest,
     ipAddress?: string,
     userAgent?: string,
+    deviceFingerprint?: string,
   ): Promise<LoginResult> {
     const user = input.identifier.includes("@")
       ? await authRepository.findUserByEmail(input.identifier)
@@ -191,7 +226,7 @@ class AuthService {
       userAgent,
     });
 
-    return this.generateUserSession(user, ipAddress, userAgent);
+    return this.generateUserSession(user, ipAddress, userAgent, deviceFingerprint);
   }
 
   // --- Re-authentication ---
@@ -241,12 +276,17 @@ class AuthService {
   }
 
   // --- Sensitive Operations ---
-  public async changePassword(userId: string, newPasswordMask: string): Promise<void> {
+  public async changePassword(userId: string, newPasswordMask: string, activeAccessToken?: string): Promise<void> {
     const passwordHash = await hashPassword(newPasswordMask);
     await authRepository.updateUserPassword(userId, passwordHash);
     
     // Revoke all active sessions via Pluggable Session Store
     await sessionStore.invalidateAllUserSessions(userId);
+
+    // Blocklist the current access token
+    if (activeAccessToken) {
+      await this.blocklistAccessToken(activeAccessToken);
+    }
 
     await auditService.log({
       userId,
@@ -356,6 +396,7 @@ class AuthService {
     profile: { id: string; email: string; username: string },
     ipAddress?: string,
     userAgent?: string,
+    deviceFingerprint?: string,
   ): Promise<LoginResult> {
     let user: any;
     try {
@@ -400,7 +441,7 @@ class AuthService {
       }
     }
 
-    return this.generateUserSession(user, ipAddress, userAgent);
+    return this.generateUserSession(user, ipAddress, userAgent, deviceFingerprint);
   }
 
   // --- Refresh Session ---
@@ -408,6 +449,7 @@ class AuthService {
     refreshToken: string,
     ipAddress?: string,
     userAgent?: string,
+    deviceFingerprint?: string,
   ): Promise<LoginResult> {
     let payload: RefreshTokenPayload;
     try {
@@ -420,22 +462,76 @@ class AuthService {
       });
     }
 
-    // Verify session state using pluggable Session Store
-    const isActive = await sessionStore.isSessionActive(payload.tokenId);
-    if (!isActive) {
+    const tokenRecord = await authRepository.findRefreshTokenById(payload.tokenId);
+    
+    // 1. Detect Refresh Token Reuse (RTR Violation / Theft)
+    if (tokenRecord && (tokenRecord.isRevoked || tokenRecord.replacedBy)) {
+      const user = await authRepository.findUserById(tokenRecord.userId);
+      
+      // Revoke ALL sessions immediately
+      await sessionStore.invalidateAllUserSessions(user.id);
+
+      // Log critical security alert
+      await auditService.log({
+        userId: user.id,
+        action: "REFRESH_TOKEN_REUSE_ALERT",
+        ipAddress,
+        userAgent,
+        metadata: { attemptedTokenId: tokenRecord.id },
+      });
+
+      // Send critical email alert
+      await emailService.enqueue(user.email, EmailType.SECURITY_ALERT, {
+        username: user.username,
+        alertMessage: "A security threat was detected. An expired or reused session token was presented for authentication. For your safety, all active sessions on all devices have been terminated.",
+        ipAddress: ipAddress || "Unknown",
+      });
+
       throw new AppError({
-        message: "Refresh token is invalid, revoked, or expired.",
+        message: "Security violation detected. Please log in again.",
         statusCode: 401,
-        code: "AUTH_REFRESH_TOKEN_INVALID",
+        code: "AUTH_SESSION_REVOKED_SECURITY",
       });
     }
 
-    const tokenRecord = await authRepository.findRefreshTokenById(payload.tokenId);
     if (!tokenRecord) {
       throw new AppError({
         message: "Refresh token not found.",
         statusCode: 401,
         code: "AUTH_REFRESH_TOKEN_NOT_FOUND",
+      });
+    }
+
+    // 2. Validate Device Fingerprint to Prevent Session Hijacking
+    const currentFingerprintHash = this.getDeviceFingerprintHash(userAgent, ipAddress, deviceFingerprint);
+    if (tokenRecord.deviceFingerprint && tokenRecord.deviceFingerprint !== currentFingerprintHash) {
+      const user = await authRepository.findUserById(tokenRecord.userId);
+
+      // Session hijacking suspected: revoke ALL sessions
+      await sessionStore.invalidateAllUserSessions(user.id);
+
+      await auditService.log({
+        userId: user.id,
+        action: "SESSION_HIJACK_SUSPECTED",
+        ipAddress,
+        userAgent,
+        metadata: {
+          tokenId: tokenRecord.id,
+          expectedFingerprint: tokenRecord.deviceFingerprint,
+          actualFingerprint: currentFingerprintHash,
+        },
+      });
+
+      await emailService.enqueue(user.email, EmailType.SECURITY_ALERT, {
+        username: user.username,
+        alertMessage: "A suspicious change in device signature was detected. To protect your account from hijacking, we have logged out all sessions.",
+        ipAddress: ipAddress || "Unknown",
+      });
+
+      throw new AppError({
+        message: "Session signature mismatch. Access denied.",
+        statusCode: 401,
+        code: "AUTH_SESSION_HIJACK_DETECTED",
       });
     }
 
@@ -448,7 +544,8 @@ class AuthService {
       user.id,
       refreshExpiresAt,
       ipAddress,
-      userAgent
+      userAgent,
+      currentFingerprintHash
     );
 
     // Cache new session in Redis
@@ -457,7 +554,8 @@ class AuthService {
       user.id,
       refreshExpiresAt,
       ipAddress,
-      userAgent
+      userAgent,
+      currentFingerprintHash
     );
 
     const newAccessToken = generateAccessToken({
@@ -485,10 +583,14 @@ class AuthService {
     };
   }
 
-  public async logout(refreshToken: string): Promise<void> {
+  public async logout(refreshToken: string, accessToken?: string): Promise<void> {
     try {
       const payload = verifyRefreshToken(refreshToken);
       await sessionStore.invalidateSession(payload.tokenId);
+
+      if (accessToken) {
+        await this.blocklistAccessToken(accessToken);
+      }
     } catch (err) {
       // Already cleared
     }
@@ -521,6 +623,7 @@ class AuthService {
     user: UserRecord,
     ipAddress?: string,
     userAgent?: string,
+    deviceFingerprint?: string,
   ): Promise<LoginResult> {
     const authenticatedUser: AuthenticatedUser = {
       id: user.id,
@@ -537,12 +640,15 @@ class AuthService {
       role: user.role,
     });
 
+    const fingerprintHash = this.getDeviceFingerprintHash(userAgent, ipAddress, deviceFingerprint);
+
     const refreshExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     const dbToken = await authRepository.createRefreshToken(
       user.id,
       refreshExpiresAt,
       ipAddress,
-      userAgent
+      userAgent,
+      fingerprintHash
     );
 
     // Cache the session in the Pluggable Session Store (Redis write-through)
@@ -551,7 +657,8 @@ class AuthService {
       user.id,
       refreshExpiresAt,
       ipAddress,
-      userAgent
+      userAgent,
+      fingerprintHash
     );
 
     const refreshToken = generateRefreshToken({

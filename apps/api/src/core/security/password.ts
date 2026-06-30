@@ -1,10 +1,12 @@
 import argon2 from "argon2";
 
+// Explicitly tuned Argon2id configuration matching RFC 9106 guidelines
+// for general-use password hashing, maximizing offline brute-force difficulty.
 const ARGON2_OPTIONS = {
   type: argon2.argon2id,
-  memoryCost: 64 * 1024,
-  timeCost: 3,
-  parallelism: 4,
+  memoryCost: 64 * 1024, // 64MB memory cost
+  timeCost: 3,           // 3 iterations
+  parallelism: 4,        // 4 parallel threads
 } as const;
 
 export function hashPassword(password: string): Promise<string> {

@@ -12,6 +12,7 @@ import { emailWorker } from "../email/email.worker";
 import { auditService } from "../audit/audit.service";
 import { AppError } from "../../shared/errors/app-error";
 import { verifyRefreshToken } from "../../core/security/jwt";
+import { policyEngine } from "../../core/security/policy";
 
 const COOKIE_OPTIONS = {
   httpOnly: true,
@@ -156,8 +157,9 @@ class AuthController {
   ) => {
     const ip = req.ip || req.socket.remoteAddress || undefined;
     const ua = req.headers["user-agent"] || undefined;
+    const fingerprint = req.headers["x-device-fingerprint"] as string | undefined;
 
-    const result = await authService.login(req.body, ip, ua);
+    const result = await authService.login(req.body, ip, ua, fingerprint);
 
     res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
 
@@ -220,12 +222,13 @@ class AuthController {
 
     const ip = req.ip || req.socket.remoteAddress || undefined;
     const ua = req.headers["user-agent"] || undefined;
+    const fingerprint = req.headers["x-device-fingerprint"] as string | undefined;
 
     const result = await authService.socialLogin(provider, {
       id: `mock-${provider}-${Date.now()}`,
       email,
       username,
-    }, ip, ua);
+    }, ip, ua, fingerprint);
 
     res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
 
@@ -255,8 +258,9 @@ class AuthController {
 
     const ip = req.ip || req.socket.remoteAddress || undefined;
     const ua = req.headers["user-agent"] || undefined;
+    const fingerprint = req.headers["x-device-fingerprint"] as string | undefined;
 
-    const result = await authService.refresh(token, ip, ua);
+    const result = await authService.refresh(token, ip, ua, fingerprint);
 
     res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
 
@@ -270,16 +274,17 @@ class AuthController {
   });
 
   public logout = asyncHandler(async (
-    req: Request,
+    req: any,
     res: Response,
   ) => {
     verifyCSRF(req);
 
     const cookies = req.cookies as Record<string, string | undefined>;
     const token = cookies["refreshToken"];
+    const accessToken = req.token;
 
     if (token) {
-      await authService.logout(token);
+      await authService.logout(token, accessToken);
     }
 
     res.clearCookie("refreshToken", CLEAR_COOKIE_OPTIONS);
@@ -347,6 +352,7 @@ class AuthController {
   ) => {
     const userId = req.user.userId;
     const { newPassword } = req.body;
+    const accessToken = req.token;
 
     if (typeof newPassword !== "string" || newPassword.length < 8) {
       return res.status(400).json({
@@ -354,7 +360,7 @@ class AuthController {
       });
     }
 
-    await authService.changePassword(userId, newPassword);
+    await authService.changePassword(userId, newPassword, accessToken);
 
     return res.status(200).json({
       message: "Password changed successfully. All other sessions have been revoked.",
@@ -421,6 +427,10 @@ class AuthController {
     res: Response,
   ) => {
     const userId = req.user.userId;
+    
+    // Centralized Policy Check
+    policyEngine.check(req.user, "view_sessions", userId);
+
     const sessions = await authService.getActiveSessions(userId);
     
     const sessionsWithMetadata = sessions.map((s) => {
@@ -459,7 +469,6 @@ class AuthController {
     req: any,
     res: Response,
   ) => {
-    const userId = req.user.userId;
     const { sessionId } = req.params;
 
     if (!sessionId) {
@@ -468,7 +477,20 @@ class AuthController {
       });
     }
 
-    await authService.revokeSession(sessionId, userId);
+    // Fetch session first to verify owner
+    const tokenRecord = await authRepository.findRefreshTokenById(sessionId);
+    if (!tokenRecord) {
+      throw new AppError({
+        message: "Session not found.",
+        statusCode: 404,
+        code: "AUTH_SESSION_NOT_FOUND",
+      });
+    }
+
+    // Centralized Policy Check
+    policyEngine.check(req.user, "revoke_session", tokenRecord.userId);
+
+    await authService.revokeSession(sessionId, tokenRecord.userId);
 
     return res.status(200).json({
       message: "Session revoked successfully.",
@@ -480,6 +502,10 @@ class AuthController {
     res: Response,
   ) => {
     const userId = req.user.userId;
+    
+    // Centralized Policy Check
+    policyEngine.check(req.user, "manage_sessions", userId);
+
     const cookies = req.cookies as Record<string, string | undefined>;
     const token = cookies["refreshToken"];
 
@@ -505,12 +531,13 @@ class AuthController {
     res: Response,
   ) => {
     const userId = req.user.userId;
-    const userRole = req.user.role;
 
     let logs: any[];
-    if (userRole === "ADMIN" || userRole === "MANAGER") {
+    if (policyEngine.can(req.user, "view_audit_logs")) {
       logs = await auditService.getAllLogs();
     } else {
+      // Centralized Policy Check for self-access
+      policyEngine.check(req.user, "view_profile", userId);
       logs = await auditService.getLogsForUser(userId);
     }
 

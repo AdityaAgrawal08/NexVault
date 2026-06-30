@@ -2,6 +2,18 @@ let accessToken: string | null = null;
 
 export const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || "http://localhost:3000";
 
+function getDeviceFingerprint(): string {
+  let fp = localStorage.getItem("device_fingerprint");
+  if (!fp) {
+    // Generate a secure, persistent device fingerprint
+    const array = new Uint32Array(4);
+    (window.crypto || (window as any).msCrypto).getRandomValues(array);
+    fp = Array.from(array, dec => dec.toString(16).padStart(8, "0")).join("");
+    localStorage.setItem("device_fingerprint", fp);
+  }
+  return fp;
+}
+
 export function setAccessToken(token: string | null) {
   accessToken = token;
 }
@@ -20,6 +32,7 @@ export async function apiRequest(url: string, options: RequestOptions = {}): Pro
     : `${API_BASE_URL}${url.startsWith("/") ? "" : "/"}${url}`;
 
   const headers = new Headers(options.headers || {});
+  headers.set("X-Device-Fingerprint", getDeviceFingerprint());
 
   if (accessToken && !options.skipAuth) {
     headers.set("Authorization", `Bearer ${accessToken}`);
@@ -38,8 +51,12 @@ export async function apiRequest(url: string, options: RequestOptions = {}): Pro
   // Handle 401 Unauthorized (potential token expiration)
   if (response.status === 401 && !options.skipAuth && !fullUrl.endsWith("/refresh")) {
     try {
+      const refreshHeaders = new Headers();
+      refreshHeaders.set("X-Device-Fingerprint", getDeviceFingerprint());
+
       const refreshResponse = await fetch(`${API_BASE_URL}/refresh`, {
         method: "POST",
+        headers: refreshHeaders,
         credentials: "include",
       });
 

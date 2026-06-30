@@ -24,6 +24,7 @@ export interface RefreshTokenRecord {
   replacedBy: string | null;
   ipAddress: string | null;
   userAgent: string | null;
+  deviceFingerprint: string | null;
 }
 
 export class AuthRepository {
@@ -309,6 +310,7 @@ export class AuthRepository {
     expiresAt: Date,
     ipAddress?: string | null,
     userAgent?: string | null,
+    deviceFingerprint?: string | null,
   ): Promise<{ id: string; rawToken: string }> {
     const rawToken = crypto.randomBytes(40).toString("hex");
     const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
@@ -320,12 +322,13 @@ export class AuthRepository {
           token_hash,
           expires_at,
           ip_address,
-          user_agent
+          user_agent,
+          device_fingerprint
         )
-        VALUES ($1, $2, $3, $4, $5)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id
       `,
-      [userId, tokenHash, expiresAt, ipAddress || null, userAgent || null],
+      [userId, tokenHash, expiresAt, ipAddress || null, userAgent || null, deviceFingerprint || null],
     );
 
     const firstRow = rows[0];
@@ -355,7 +358,8 @@ export class AuthRepository {
           is_revoked AS "isRevoked",
           replaced_by AS "replacedBy",
           ip_address AS "ipAddress",
-          user_agent AS "userAgent"
+          user_agent AS "userAgent",
+          device_fingerprint AS "deviceFingerprint"
         FROM refresh_tokens
         WHERE token_hash = $1
         LIMIT 1
@@ -380,7 +384,8 @@ export class AuthRepository {
           is_revoked AS "isRevoked",
           replaced_by AS "replacedBy",
           ip_address AS "ipAddress",
-          user_agent AS "userAgent"
+          user_agent AS "userAgent",
+          device_fingerprint AS "deviceFingerprint"
         FROM refresh_tokens
         WHERE id = $1
         LIMIT 1
@@ -419,6 +424,7 @@ export class AuthRepository {
     expiresAt: Date,
     ipAddress?: string | null,
     userAgent?: string | null,
+    deviceFingerprint?: string | null,
   ): Promise<{ id: string; rawToken: string }> {
     const rawToken = crypto.randomBytes(40).toString("hex");
     const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
@@ -434,12 +440,13 @@ export class AuthRepository {
             token_hash,
             expires_at,
             ip_address,
-            user_agent
+            user_agent,
+            device_fingerprint
           )
-          VALUES ($1, $2, $3, $4, $5)
+          VALUES ($1, $2, $3, $4, $5, $6)
           RETURNING id
         `,
-        [userId, tokenHash, expiresAt, ipAddress || null, userAgent || null],
+        [userId, tokenHash, expiresAt, ipAddress || null, userAgent || null, deviceFingerprint || null],
       );
       const firstRow = rows[0];
       if (!firstRow) {

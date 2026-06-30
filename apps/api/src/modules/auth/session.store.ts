@@ -2,7 +2,14 @@ import { redis } from "../../core/database/redis";
 import { authRepository } from "./auth.repository";
 
 export interface SessionStore {
-  cacheSession(tokenId: string, userId: string, expiresAt: Date, ipAddress?: string | null, userAgent?: string | null): Promise<void>;
+  cacheSession(
+    tokenId: string,
+    userId: string,
+    expiresAt: Date,
+    ipAddress?: string | null,
+    userAgent?: string | null,
+    deviceFingerprint?: string | null
+  ): Promise<void>;
   isSessionActive(tokenId: string): Promise<boolean>;
   invalidateSession(tokenId: string): Promise<void>;
   invalidateAllUserSessions(userId: string): Promise<void>;
@@ -25,6 +32,7 @@ class PluggableSessionStore implements SessionStore {
     expiresAt: Date,
     ipAddress?: string | null,
     userAgent?: string | null,
+    deviceFingerprint?: string | null
   ): Promise<void> {
     if (redis) {
       const key = this.getSessionKey(tokenId);
@@ -35,6 +43,7 @@ class PluggableSessionStore implements SessionStore {
         userId,
         ipAddress: ipAddress || null,
         userAgent: userAgent || null,
+        deviceFingerprint: deviceFingerprint || null,
         expiresAt: expiresAt.toISOString(),
       };
 
@@ -68,7 +77,8 @@ class PluggableSessionStore implements SessionStore {
         tokenRecord.userId,
         new Date(tokenRecord.expiresAt),
         tokenRecord.ipAddress,
-        tokenRecord.userAgent
+        tokenRecord.userAgent,
+        tokenRecord.deviceFingerprint
       );
     }
 

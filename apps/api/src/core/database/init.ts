@@ -2,7 +2,7 @@ import { db } from "./postgres";
 
 export async function initializeDatabase() {
   try {
-    // 1. Alter users table to add new columns for verification, roles, and account lockout (No TOTP/MFA columns)
+    // 1. Alter users table to add new columns for verification, roles, and account lockout
     await db.query(`
       ALTER TABLE users 
       ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE,
@@ -24,11 +24,12 @@ export async function initializeDatabase() {
       );
     `);
 
-    // 3. Alter refresh_tokens table to add IP and User Agent tracking
+    // 3. Alter refresh_tokens table to add IP, User Agent, and Device Fingerprint tracking
     await db.query(`
       ALTER TABLE refresh_tokens
       ADD COLUMN IF NOT EXISTS ip_address VARCHAR(45) DEFAULT NULL,
-      ADD COLUMN IF NOT EXISTS user_agent TEXT DEFAULT NULL;
+      ADD COLUMN IF NOT EXISTS user_agent TEXT DEFAULT NULL,
+      ADD COLUMN IF NOT EXISTS device_fingerprint VARCHAR(64) DEFAULT NULL;
     `);
 
     // 4. Create or recreate the otps table to support hashing, purpose, and attempts
@@ -52,7 +53,7 @@ export async function initializeDatabase() {
       ADD COLUMN IF NOT EXISTS otp_hash VARCHAR(64);
     `);
 
-    // Migrate any raw 'otp' column to 'otp_hash' if necessary (or just drop the raw 'otp' column in production, but for safety we can just allow both or keep it simple)
+    // Migrate any raw 'otp' column to 'otp_hash' if necessary
     await db.query(`
       ALTER TABLE otps DROP COLUMN IF EXISTS otp;
     `);
@@ -139,7 +140,7 @@ export async function initializeDatabase() {
       CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
     `);
 
-    console.log("[Database] Initialized tables, columns, enums, and indexes successfully (TOTP removed, OTP updated).");
+    console.log("[Database] Initialized tables, columns, enums, and indexes successfully (Device Fingerprint added).");
   } catch (error) {
     console.error("[Database] Initialization failed:", error);
     throw error;
