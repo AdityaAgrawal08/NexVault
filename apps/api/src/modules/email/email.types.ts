@@ -17,7 +17,7 @@ export enum EmailPriority {
 }
 
 export type EmailPriorityType = EmailPriority;
-export type EmailStatusType = "QUEUED" | "PROCESSING" | "SENT" | "FAILED" | "EXPIRED";
+export type EmailStatusType = "QUEUED" | "PROCESSING" | "SENT" | "FAILED" | "EXPIRED" | "DLQ";
 
 export const EMAIL_PRIORITY_MAP: Record<EmailType, EmailPriority> = {
   [EmailType.EMAIL_VERIFICATION]: EmailPriority.CRITICAL,

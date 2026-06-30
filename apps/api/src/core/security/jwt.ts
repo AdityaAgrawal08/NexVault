@@ -7,6 +7,7 @@ export interface AccessTokenPayload {
   username: string;
   email: string;
   role: string;
+  tokenId: string;
 }
 
 export interface RefreshTokenPayload {

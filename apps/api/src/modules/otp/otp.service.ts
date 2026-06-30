@@ -3,6 +3,7 @@ import { otpStore } from "./otp.store";
 import { emailService } from "../email/email.service";
 import { EmailType } from "../email/email.types";
 import { AppError } from "../../shared/errors/app-error";
+import { lockService } from "../../core/security/lock.service";
 
 export const OTPPurpose = {
   EMAIL_VERIFICATION: "EMAIL_VERIFICATION",
@@ -66,45 +67,39 @@ class OTPService {
     purpose: OTPPurposeType,
     otp: string,
   ): Promise<boolean> {
-    const record = await otpStore.findLatestOTP(email, purpose);
-    if (!record) {
+    const lockKey = `lock:otp:${email.toLowerCase()}:${purpose}`;
+    const lockToken = await lockService.acquireLock(lockKey, 5000);
+
+    if (!lockToken) {
       throw new AppError({
-        message: "Verification code not found. Please request a new one.",
-        statusCode: 400,
-        code: "OTP_NOT_FOUND",
+        message: "An OTP verification is already in progress for this request. Please try again.",
+        statusCode: 429,
+        code: "AUTH_CONCURRENT_OTP_VERIFY",
       });
     }
 
-    // Check expiration
-    if (new Date() > new Date(record.expiresAt)) {
-      await otpStore.deleteOTP(record.id, email, purpose);
-      throw new AppError({
-        message: "Verification code has expired. Please request a new one.",
-        statusCode: 400,
-        code: "OTP_EXPIRED",
-      });
-    }
+    try {
+      const record = await otpStore.findLatestOTP(email, purpose);
+      if (!record) {
+        throw new AppError({
+          message: "Verification code not found. Please request a new one.",
+          statusCode: 400,
+          code: "OTP_NOT_FOUND",
+        });
+      }
 
-    // Check attempts limit (5 max)
-    if (record.attempts >= 5) {
-      await otpStore.deleteOTP(record.id, email, purpose);
-      throw new AppError({
-        message: "Too many failed attempts. Please request a new code.",
-        statusCode: 400,
-        code: "OTP_MAX_ATTEMPTS_EXCEEDED",
-      });
-    }
+      // Check expiration
+      if (new Date() > new Date(record.expiresAt)) {
+        await otpStore.deleteOTP(record.id, email, purpose);
+        throw new AppError({
+          message: "Verification code has expired. Please request a new one.",
+          statusCode: 400,
+          code: "OTP_EXPIRED",
+        });
+      }
 
-    // Constant-time comparison of SHA-256 hashes
-    const inputHash = this.hashOTP(otp.trim());
-    const isMatch = crypto.timingSafeEqual(
-      Buffer.from(record.otpHash, "hex"),
-      Buffer.from(inputHash, "hex")
-    );
-
-    if (!isMatch) {
-      const currentAttempts = await otpStore.incrementAttempts(record.id, email, purpose);
-      if (currentAttempts >= 5) {
+      // Check attempts limit (5 max)
+      if (record.attempts >= 5) {
         await otpStore.deleteOTP(record.id, email, purpose);
         throw new AppError({
           message: "Too many failed attempts. Please request a new code.",
@@ -113,16 +108,37 @@ class OTPService {
         });
       }
 
-      throw new AppError({
-        message: `Invalid verification code. You have ${5 - currentAttempts} attempts remaining.`,
-        statusCode: 400,
-        code: "OTP_INVALID",
-      });
-    }
+      // Constant-time comparison of SHA-256 hashes
+      const inputHash = this.hashOTP(otp.trim());
+      const isMatch = crypto.timingSafeEqual(
+        Buffer.from(record.otpHash, "hex"),
+        Buffer.from(inputHash, "hex")
+      );
 
-    // Success: delete OTP immediately (single-use)
-    await otpStore.deleteOTP(record.id, email, purpose);
-    return true;
+      if (!isMatch) {
+        const currentAttempts = await otpStore.incrementAttempts(record.id, email, purpose);
+        if (currentAttempts >= 5) {
+          await otpStore.deleteOTP(record.id, email, purpose);
+          throw new AppError({
+            message: "Too many failed attempts. Please request a new code.",
+            statusCode: 400,
+            code: "OTP_MAX_ATTEMPTS_EXCEEDED",
+          });
+        }
+
+        throw new AppError({
+          message: `Invalid verification code. You have ${5 - currentAttempts} attempts remaining.`,
+          statusCode: 400,
+          code: "OTP_INVALID",
+        });
+      }
+
+      // Success: delete OTP immediately (single-use)
+      await otpStore.deleteOTP(record.id, email, purpose);
+      return true;
+    } finally {
+      await lockService.releaseLock(lockKey, lockToken);
+    }
   }
 }
 

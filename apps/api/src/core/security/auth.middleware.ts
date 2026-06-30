@@ -2,6 +2,9 @@ import type { Request, Response, NextFunction } from "express";
 import { verifyAccessToken, AccessTokenPayload } from "./jwt";
 import { AppError } from "../../shared/errors/app-error";
 import { tokenBlocklistStore } from "./blocklist.store";
+import { geoVelocityService } from "./geo.service";
+import { sessionStore } from "../../modules/auth/session.store";
+import { auditService } from "../../modules/audit/audit.service";
 
 // Extend Request type to include user payload
 export interface AuthenticatedRequest extends Request {
@@ -41,6 +44,35 @@ export async function authMiddleware(
     }
 
     const payload = verifyAccessToken(token);
+    
+    // 2. Impossible Travel / Geo-Velocity Check
+    const ip = (req.headers["x-simulated-ip"] as string) || req.ip || req.socket.remoteAddress || "unknown";
+    const travelResult = await geoVelocityService.checkTravel(payload.userId, payload.tokenId, ip);
+    
+    if (!travelResult.allowed) {
+      // Revoke the session immediately
+      await sessionStore.invalidateSession(payload.tokenId);
+
+      // Log critical security event
+      await auditService.log({
+        userId: payload.userId,
+        action: "IMPOSSIBLE_TRAVEL_DETECTED",
+        ipAddress: ip,
+        userAgent: req.headers["user-agent"],
+        metadata: {
+          tokenId: payload.tokenId,
+          speedKmh: travelResult.speed,
+          distanceKm: travelResult.distance,
+        },
+      });
+
+      return next(new AppError({
+        message: "Suspicious travel activity detected. Session revoked for security. Please log in again.",
+        statusCode: 401,
+        code: "AUTH_IMPOSSIBLE_TRAVEL",
+      }));
+    }
+
     req.user = payload;
     req.token = token; // Attach raw token
     next();

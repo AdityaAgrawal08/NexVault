@@ -114,10 +114,10 @@ class EmailWorker {
     const isPermanent = newRetryCount >= job.maxRetries;
 
     if (isPermanent) {
-      await emailQueue.updateJobStatus(job.id, "FAILED", {
+      await emailQueue.updateJobStatus(job.id, "DLQ", {
         error: error.message || "Unknown error",
       });
-      console.error(`[EmailWorker] Job ${job.id} permanently failed: ${error.message}`);
+      console.error(`[EmailWorker] Job ${job.id} permanently failed and moved to DLQ: ${error.message}`);
       return;
     }
 

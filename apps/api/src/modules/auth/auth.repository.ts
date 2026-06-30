@@ -113,7 +113,7 @@ export class AuthRepository {
   public async findUserById(
     id: string,
   ): Promise<UserRecord> {
-    const { rows } = await db.query<UserRecord>(
+    const { rows } = await db.readQuery<UserRecord>(
       `
         SELECT
           id,
@@ -148,7 +148,7 @@ export class AuthRepository {
   public async findUserByEmail(
     email: string,
   ): Promise<UserRecord> {
-    const { rows } = await db.query<UserRecord>(
+    const { rows } = await db.readQuery<UserRecord>(
       `
         SELECT
           id,
@@ -183,7 +183,7 @@ export class AuthRepository {
   public async findUserByUsername(
     username: string,
   ): Promise<UserRecord> {
-    const { rows } = await db.query<UserRecord>(
+    const { rows } = await db.readQuery<UserRecord>(
       `
         SELECT
           id,
@@ -218,7 +218,7 @@ export class AuthRepository {
   public async findUserByPhone(
     phoneNumber: string,
   ): Promise<UserRecord> {
-    const { rows } = await db.query<UserRecord>(
+    const { rows } = await db.readQuery<UserRecord>(
       `
         SELECT
           id,
@@ -266,7 +266,7 @@ export class AuthRepository {
   }
 
   public async getAllUsernames(): Promise<string[]> {
-    const { rows } = await db.query<{ username: string }>(
+    const { rows } = await db.readQuery<{ username: string }>(
       `SELECT username FROM users`
     );
     return rows.map((row) => row.username);
@@ -347,7 +347,7 @@ export class AuthRepository {
   ): Promise<RefreshTokenRecord | null> {
     const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
 
-    const { rows } = await db.query<any>(
+    const { rows } = await db.readQuery<any>(
       `
         SELECT
           id,
@@ -373,7 +373,7 @@ export class AuthRepository {
   public async findRefreshTokenById(
     id: string,
   ): Promise<RefreshTokenRecord | null> {
-    const { rows } = await db.query<any>(
+    const { rows } = await db.readQuery<any>(
       `
         SELECT
           id,
@@ -479,7 +479,7 @@ export class AuthRepository {
   }
 
   public async findActiveSessionsForUser(userId: string): Promise<any[]> {
-    const { rows } = await db.query(
+    const { rows } = await db.readQuery(
       `
         SELECT
           id,
@@ -536,7 +536,7 @@ export class AuthRepository {
   public async findLatestOTP(
     email: string,
   ): Promise<{ otp: string; expiresAt: Date; createdAt: Date } | null> {
-    const { rows } = await db.query<any>(
+    const { rows } = await db.readQuery<any>(
       `
         SELECT otp, expires_at AS "expiresAt", created_at AS "createdAt"
         FROM otps
@@ -577,7 +577,7 @@ export class AuthRepository {
   public async findPasswordResetByToken(
     token: string,
   ): Promise<{ userId: string; expiresAt: Date } | null> {
-    const { rows } = await db.query<any>(
+    const { rows } = await db.readQuery<any>(
       `
         SELECT user_id AS "userId", expires_at AS "expiresAt"
         FROM password_resets

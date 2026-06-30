@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import crypto from "crypto";
 import { AppError } from "../errors/app-error";
 import { redis } from "../../core/database/redis";
+import { metricsService } from "../../core/monitoring/metrics.service";
 
 interface RateLimitStore {
   checkLimit(ip: string, windowMs: number, maxRequests: number): Promise<{
@@ -127,6 +128,7 @@ export function rateLimiter(windowMs: number, maxRequests: number) {
       res.setHeader("X-RateLimit-Reset", Math.ceil(result.resetTime / 1000));
 
       if (!result.allowed) {
+        metricsService.incrementRateLimitTriggers();
         res.setHeader("Retry-After", retryAfterSeconds);
         return next(
           new AppError({

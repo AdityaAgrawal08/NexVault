@@ -11,6 +11,8 @@ import { db } from "../../core/database/postgres";
 import { usernameBloomFilter } from "./username-bloom-filter";
 import { sessionStore } from "./session.store";
 import { tokenBlocklistStore } from "../../core/security/blocklist.store";
+import { pwnedPasswordService } from "../../core/security/pwned.service";
+import { lockService } from "../../core/security/lock.service";
 
 import {
   generateAccessToken,
@@ -86,67 +88,92 @@ class AuthService {
   public async register(
     input: RegisterUserRequest & { otp: string },
   ): Promise<RegisterUserResponse> {
-    // 1. Verify OTP
-    await otpService.verifyOTP(input.email, OTPPurpose.EMAIL_VERIFICATION, input.otp);
+    const lockKey = `lock:register:${input.username.toLowerCase()}`;
+    const lockToken = await lockService.acquireLock(lockKey, 5000);
 
-    // 2. Pre-check username availability
-    try {
-      await authRepository.findUserByUsername(input.username);
-      throw new UserAlreadyExistsError("username");
-    } catch (error) {
-      if (!(error instanceof UserNotFoundError)) {
-        throw error;
-      }
+    if (!lockToken) {
+      throw new AppError({
+        message: "Registration is currently in progress for this username. Please try again in a few seconds.",
+        statusCode: 429,
+        code: "AUTH_CONCURRENT_REGISTER",
+      });
     }
 
-    // 3. Pre-check email availability
     try {
-      await authRepository.findUserByEmail(input.email);
-      throw new UserAlreadyExistsError("email");
-    } catch (error) {
-      if (!(error instanceof UserNotFoundError)) {
-        throw error;
+      // 1. Check if password has been breached
+      const isBreached = await pwnedPasswordService.isPasswordBreached(input.password);
+      if (isBreached) {
+        throw new AppError({
+          message: "This password has been found in a database of breached passwords and is unsafe to use. Please choose a stronger password.",
+          statusCode: 400,
+          code: "AUTH_PASSWORD_BREACHED",
+        });
       }
-    }
 
-    // 4. Pre-check phone number availability
-    try {
-      await authRepository.findUserByPhone(input.phoneNumber);
-      throw new UserAlreadyExistsError("phoneNumber");
-    } catch (error) {
-      if (!(error instanceof UserNotFoundError)) {
-        throw error;
+      // 2. Verify OTP
+      await otpService.verifyOTP(input.email, OTPPurpose.EMAIL_VERIFICATION, input.otp);
+
+      // 3. Pre-check username availability
+      try {
+        await authRepository.findUserByUsername(input.username);
+        throw new UserAlreadyExistsError("username");
+      } catch (error) {
+        if (!(error instanceof UserNotFoundError)) {
+          throw error;
+        }
       }
+
+      // 4. Pre-check email availability
+      try {
+        await authRepository.findUserByEmail(input.email);
+        throw new UserAlreadyExistsError("email");
+      } catch (error) {
+        if (!(error instanceof UserNotFoundError)) {
+          throw error;
+        }
+      }
+
+      // 5. Pre-check phone number availability
+      try {
+        await authRepository.findUserByPhone(input.phoneNumber);
+        throw new UserAlreadyExistsError("phoneNumber");
+      } catch (error) {
+        if (!(error instanceof UserNotFoundError)) {
+          throw error;
+        }
+      }
+
+      const passwordHash = await hashPassword(input.password);
+
+      const createUserInput: CreateUserInput = {
+        username: input.username,
+        email: input.email,
+        phoneNumber: input.phoneNumber,
+        passwordHash,
+      };
+
+      const user = await authRepository.createUser(createUserInput);
+      
+      // Mark user as verified since they verified their OTP during registration
+      await authRepository.verifyUser(user.id);
+
+      // Enqueue a Welcome email
+      await emailService.enqueue(user.email, EmailType.WELCOME, {
+        username: user.username,
+      });
+
+      // Log registration
+      await auditService.log({
+        userId: user.id,
+        action: "ACCOUNT_CREATED",
+        metadata: { username: user.username, email: user.email },
+      });
+
+      usernameBloomFilter.add(user.username.toLowerCase());
+      return user;
+    } finally {
+      await lockService.releaseLock(lockKey, lockToken);
     }
-
-    const passwordHash = await hashPassword(input.password);
-
-    const createUserInput: CreateUserInput = {
-      username: input.username,
-      email: input.email,
-      phoneNumber: input.phoneNumber,
-      passwordHash,
-    };
-
-    const user = await authRepository.createUser(createUserInput);
-    
-    // Mark user as verified since they verified their OTP during registration
-    await authRepository.verifyUser(user.id);
-
-    // Enqueue a Welcome email
-    await emailService.enqueue(user.email, EmailType.WELCOME, {
-      username: user.username,
-    });
-
-    // Log registration
-    await auditService.log({
-      userId: user.id,
-      action: "ACCOUNT_CREATED",
-      metadata: { username: user.username, email: user.email },
-    });
-
-    usernameBloomFilter.add(user.username.toLowerCase());
-    return user;
   }
 
   // --- Login & Session ---
@@ -277,6 +304,16 @@ class AuthService {
 
   // --- Sensitive Operations ---
   public async changePassword(userId: string, newPasswordMask: string, activeAccessToken?: string): Promise<void> {
+    // Check if new password is breached
+    const isBreached = await pwnedPasswordService.isPasswordBreached(newPasswordMask);
+    if (isBreached) {
+      throw new AppError({
+        message: "This password has been found in a database of breached passwords and is unsafe to use. Please choose a stronger password.",
+        statusCode: 400,
+        code: "AUTH_PASSWORD_BREACHED",
+      });
+    }
+
     const passwordHash = await hashPassword(newPasswordMask);
     await authRepository.updateUserPassword(userId, passwordHash);
     
@@ -365,6 +402,16 @@ class AuthService {
   }
 
   public async resetPassword(email: string, otp: string, passwordMask: string): Promise<void> {
+    // Check if new password is breached
+    const isBreached = await pwnedPasswordService.isPasswordBreached(passwordMask);
+    if (isBreached) {
+      throw new AppError({
+        message: "This password has been found in a database of breached passwords and is unsafe to use. Please choose a stronger password.",
+        statusCode: 400,
+        code: "AUTH_PASSWORD_BREACHED",
+      });
+    }
+
     // Verify OTP first
     await otpService.verifyOTP(email, OTPPurpose.PASSWORD_RESET, otp);
 
@@ -563,6 +610,7 @@ class AuthService {
       username: user.username,
       email: user.email,
       role: user.role,
+      tokenId: newToken.id,
     });
 
     const newRefreshToken = generateRefreshToken({
@@ -633,13 +681,6 @@ class AuthService {
       role: user.role,
     };
 
-    const accessToken = generateAccessToken({
-      userId: user.id,
-      username: user.username,
-      email: user.email,
-      role: user.role,
-    });
-
     const fingerprintHash = this.getDeviceFingerprintHash(userAgent, ipAddress, deviceFingerprint);
 
     const refreshExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -660,6 +701,14 @@ class AuthService {
       userAgent,
       fingerprintHash
     );
+
+    const accessToken = generateAccessToken({
+      userId: user.id,
+      username: user.username,
+      email: user.email,
+      role: user.role,
+      tokenId: dbToken.id,
+    });
 
     const refreshToken = generateRefreshToken({
       userId: user.id,

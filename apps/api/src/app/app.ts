@@ -1,9 +1,11 @@
 import express from "express";
 import routes from "./routes";
-import cors from "cors"; //Cross-Origin Resource Sharing
+import cors from "cors";
 import cookieParser from "cookie-parser";
 import { errorMiddleware } from "../shared/middleware/error.middleware";
 import { rateLimiter } from "../shared/middleware/rate-limiter.middleware";
+import { ipBlacklistMiddleware } from "../shared/middleware/ip-blacklist.middleware";
+import { metricsService } from "../core/monitoring/metrics.service";
 
 export const app = express();
 
@@ -16,9 +18,18 @@ app.use(
 app.use(cookieParser());
 app.use(express.json());
 
-// Global Rate Limiter: 200 requests per minute per IP
+// 1. Global IP Blacklist Middleware
+app.use(ipBlacklistMiddleware);
+
+// 2. Global Rate Limiter: 200 requests per minute per IP
 app.use(rateLimiter(60000, 200));
-// Why use express.json because without it : { username: "user"} arrives as undefined and with it req.body.username works
+
+// 3. Prometheus Metrics Endpoint
+app.get("/metrics", async (req, res) => {
+  res.setHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+  const metrics = await metricsService.getMetricsText();
+  res.end(metrics);
+});
 
 app.use(routes);
 app.use(errorMiddleware);

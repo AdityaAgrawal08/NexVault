@@ -281,6 +281,14 @@ class RedisEmailQueue implements EmailQueue {
         sentAt: new Date().toISOString(),
       });
       await redis.expire(jobKey, 3600);
+    } else if (status === "DLQ") {
+      await redis.multi()
+        .hset(jobKey, {
+          status: "DLQ",
+          failedReason: options?.error || "",
+        })
+        .lpush("email:dlq", jobId)
+        .exec();
     } else {
       await redis.hset(jobKey, {
         status,

@@ -1,4 +1,8 @@
 import "dotenv/config";
+import { initializeTelemetry } from "../core/monitoring/telemetry";
+
+// Initialize OpenTelemetry tracing before loading any other modules
+initializeTelemetry();
 
 import { app } from "./app";
 import { initializeUsernameBloomFilter } from "../modules/auth/username-bloom-filter";

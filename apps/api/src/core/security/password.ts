@@ -1,4 +1,5 @@
 import argon2 from "argon2";
+import { metricsService } from "../monitoring/metrics.service";
 
 // Explicitly tuned Argon2id configuration matching RFC 9106 guidelines
 // for general-use password hashing, maximizing offline brute-force difficulty.
@@ -9,8 +10,11 @@ const ARGON2_OPTIONS = {
   parallelism: 4,        // 4 parallel threads
 } as const;
 
-export function hashPassword(password: string): Promise<string> {
-  return argon2.hash(password, ARGON2_OPTIONS);
+export async function hashPassword(password: string): Promise<string> {
+  const start = Date.now();
+  const hash = await argon2.hash(password, ARGON2_OPTIONS);
+  metricsService.recordArgon2idLatency(Date.now() - start);
+  return hash;
 }
 
 export function verifyPassword(password: string, hash: string): Promise<boolean> {

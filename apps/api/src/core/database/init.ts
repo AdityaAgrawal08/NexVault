@@ -72,10 +72,12 @@ export async function initializeDatabase() {
     // 7. Create ENUMs for email delivery subsystem
     await db.query(`
       DO $$ BEGIN
-        CREATE TYPE email_status AS ENUM ('QUEUED', 'PROCESSING', 'SENT', 'FAILED', 'EXPIRED');
+        CREATE TYPE email_status AS ENUM ('QUEUED', 'PROCESSING', 'SENT', 'FAILED', 'EXPIRED', 'DLQ');
       EXCEPTION
         WHEN duplicate_object THEN null;
       END $$;
+
+      ALTER TYPE email_status ADD VALUE IF NOT EXISTS 'DLQ';
 
       DO $$ BEGIN
         CREATE TYPE email_priority AS ENUM ('CRITICAL', 'HIGH', 'NORMAL', 'BULK');
