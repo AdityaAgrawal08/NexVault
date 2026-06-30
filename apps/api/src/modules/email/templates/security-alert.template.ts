@@ -43,6 +43,7 @@ class SecurityAlertTemplate implements EmailTemplate<SecurityAlertPayload> {
   }
 
   private escapeHtml(text: string): string {
+    if (!text || typeof text !== "string") return "";
     return text
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")

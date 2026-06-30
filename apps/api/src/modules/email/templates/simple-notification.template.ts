@@ -41,6 +41,7 @@ class SimpleNotificationTemplate implements EmailTemplate<SimpleNotificationPayl
   }
 
   private escapeHtml(text: string): string {
+    if (!text || typeof text !== "string") return "";
     return text
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
