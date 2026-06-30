@@ -1,7 +1,7 @@
-import { db } from "../../core/database/postgres";
-import { EmailType, EmailPriority } from "./email.types";
+import { EmailType, EmailPriority, EmailPriorityType } from "./email.types";
 import { templates } from "./templates";
 import { MockEmailProvider, EmailProvider } from "./email.provider";
+import { emailQueue, EmailJob } from "./email.queue";
 
 class EmailWorker {
   private active = false;
@@ -38,137 +38,55 @@ class EmailWorker {
    * Processes a single job immediately (Fast-path dispatch)
    */
   public async processJobById(jobId: string): Promise<void> {
-    const client = await db.connect();
-    try {
-      await client.query("BEGIN");
-      
-      // Select and lock the job
-      const { rows } = await client.query<any>(
-        `
-          SELECT * FROM email_jobs
-          WHERE id = $1 AND status IN ('QUEUED', 'FAILED')
-          FOR UPDATE SKIP LOCKED
-        `,
-        [jobId],
-      );
-
-      const job = rows[0];
-      if (!job) {
-        await client.query("ROLLBACK");
-        return; // Already being processed or sent
-      }
-
-      await client.query(
-        `
-          UPDATE email_jobs
-          SET status = 'PROCESSING',
-              processing_started_at = NOW()
-          WHERE id = $1
-        `,
-        [jobId],
-      );
-      await client.query("COMMIT");
-
-      await this.executeJob(job);
-    } catch (err) {
-      await client.query("ROLLBACK");
-      console.error(`[EmailWorker] Error in fast-path for job ${jobId}:`, err);
-    } finally {
-      client.release();
-    }
+    // Note: Fast-path processing is simplified to just let the worker pick it up,
+    // or we can manually fetch the job from the queue and run it.
+    // For Redis, because getNextJob is O(1) and instant, the poller will pick it up
+    // within milliseconds. So we can just let it poll, or manually fetch if needed.
+    // Let's implement a simple direct execution if we can find it.
+    // Since getNextJob pops a job, we can just run processQueue() immediately!
+    await this.processQueue();
   }
 
   /**
    * Main queue processing loop
    */
   private async processQueue(): Promise<void> {
-    const client = await db.connect();
     try {
-      await client.query("BEGIN");
+      // Fetch the next job from the pluggable queue
+      const job = await emailQueue.getNextJob();
+      if (!job) return;
 
-      // Retrieve up to 10 pending jobs using SELECT FOR UPDATE SKIP LOCKED.
-      // This is extremely safe for concurrent workers.
-      // Ordered by: CRITICAL (1) -> HIGH (2) -> NORMAL (3) -> BULK (4)
-      const { rows } = await client.query<any>(
-        `
-          SELECT * FROM email_jobs
-          WHERE status = 'QUEUED'
-             OR (status = 'FAILED' AND retry_count < max_retries AND next_attempt_at <= NOW())
-          ORDER BY 
-            CASE priority
-              WHEN 'CRITICAL' THEN 1
-              WHEN 'HIGH' THEN 2
-              WHEN 'NORMAL' THEN 3
-              WHEN 'BULK' THEN 4
-              ELSE 5
-            END,
-            next_attempt_at ASC
-          LIMIT 10
-          FOR UPDATE SKIP LOCKED
-        `
-      );
-
-      if (rows.length === 0) {
-        await client.query("ROLLBACK");
-        return;
-      }
-
-      // Mark them all as processing
-      const jobIds = rows.map((r: any) => r.id);
-      await client.query(
-        `
-          UPDATE email_jobs
-          SET status = 'PROCESSING',
-              processing_started_at = NOW()
-          WHERE id = ANY($1::uuid[])
-        `,
-        [jobIds]
-      );
-
-      await client.query("COMMIT");
-
-      // Execute jobs concurrently in the background
-      for (const job of rows) {
-        this.executeJob(job).catch((err) => {
-          console.error(`[EmailWorker] Failed executing job ${job.id}:`, err);
-        });
-      }
+      // Execute the job in the background
+      this.executeJob(job).catch((err) => {
+        console.error(`[EmailWorker] Failed executing job ${job.id}:`, err);
+      });
     } catch (err) {
-      await client.query("ROLLBACK");
-      throw err;
-    } finally {
-      client.release();
+      console.error("[EmailWorker] Error fetching next job:", err);
     }
   }
 
   /**
    * Renders the template and sends via the provider
    */
-  private async executeJob(job: any): Promise<void> {
-    const template = templates[job.email_type as EmailType];
+  private async executeJob(job: EmailJob): Promise<void> {
+    const template = templates[job.emailType as EmailType];
     if (!template) {
-      await this.handleFailure(job, new Error(`No template found for ${job.email_type}`));
+      await this.handleFailure(job, new Error(`No template found for ${job.emailType}`));
       return;
     }
 
     // 1. Expiration check for Critical OTPs (15 minutes)
     if (
       job.priority === EmailPriority.CRITICAL &&
-      [EmailType.EMAIL_VERIFICATION, EmailType.LOGIN_OTP, EmailType.PASSWORD_RESET].includes(job.email_type)
+      [EmailType.EMAIL_VERIFICATION, EmailType.LOGIN_OTP, EmailType.PASSWORD_RESET].includes(job.emailType as any)
     ) {
-      const queuedTime = new Date(job.queued_at).getTime();
+      const queuedTime = new Date(job.queuedAt).getTime();
       const ageMs = Date.now() - queuedTime;
       if (ageMs > 15 * 60 * 1000) {
-        await db.query(
-          `
-            UPDATE email_jobs
-            SET status = 'EXPIRED',
-                failed_reason = 'OTP expired before delivery.'
-            WHERE id = $1
-          `,
-          [job.id],
-        );
-        console.log(`[EmailWorker] Job ${job.id} of type ${job.email_type} marked as EXPIRED.`);
+        await emailQueue.updateJobStatus(job.id, "EXPIRED", {
+          error: "OTP expired before delivery.",
+        });
+        console.log(`[EmailWorker] Job ${job.id} of type ${job.emailType} marked as EXPIRED.`);
         return;
       }
     }
@@ -182,15 +100,7 @@ class EmailWorker {
       await this.provider.send(job.recipient, template.subject, html, text);
 
       // 4. Mark as sent
-      await db.query(
-        `
-          UPDATE email_jobs
-          SET status = 'SENT',
-              sent_at = NOW()
-          WHERE id = $1
-        `,
-        [job.id],
-      );
+      await emailQueue.updateJobStatus(job.id, "SENT");
     } catch (err: any) {
       await this.handleFailure(job, err);
     }
@@ -199,65 +109,41 @@ class EmailWorker {
   /**
    * Handles job failure and calculates the next retry backoff
    */
-  private async handleFailure(job: any, error: Error): Promise<void> {
-    const newRetryCount = job.retry_count + 1;
-    const isPermanent = newRetryCount >= job.max_retries;
+  private async handleFailure(job: EmailJob, error: Error): Promise<void> {
+    const newRetryCount = job.retryCount + 1;
+    const isPermanent = newRetryCount >= job.maxRetries;
+
+    if (isPermanent) {
+      await emailQueue.updateJobStatus(job.id, "FAILED", {
+        error: error.message || "Unknown error",
+      });
+      console.error(`[EmailWorker] Job ${job.id} permanently failed: ${error.message}`);
+      return;
+    }
 
     let nextAttemptAt = new Date();
     
     // Calculate backoff based on priority
-    if (!isPermanent) {
-      if (job.priority === EmailPriority.CRITICAL) {
-        // Critical: retry in 5 seconds, then 15 seconds
-        const delaySec = newRetryCount === 1 ? 5 : 15;
-        nextAttemptAt = new Date(Date.now() + delaySec * 1000);
-      } else if (job.priority === EmailPriority.HIGH || job.priority === EmailPriority.NORMAL) {
-        // Normal/High: exponential backoff
-        const delaySec = newRetryCount * 30;
-        nextAttemptAt = new Date(Date.now() + delaySec * 1000);
-      } else {
-        // Bulk: longer interval
-        const delaySec = newRetryCount * 5 * 60;
-        nextAttemptAt = new Date(Date.now() + delaySec * 1000);
-      }
+    if (job.priority === EmailPriority.CRITICAL) {
+      const delaySec = newRetryCount === 1 ? 5 : 15;
+      nextAttemptAt = new Date(Date.now() + delaySec * 1000);
+    } else if (job.priority === EmailPriority.HIGH || job.priority === EmailPriority.NORMAL) {
+      const delaySec = newRetryCount * 30;
+      nextAttemptAt = new Date(Date.now() + delaySec * 1000);
+    } else {
+      const delaySec = newRetryCount * 5 * 60;
+      nextAttemptAt = new Date(Date.now() + delaySec * 1000);
     }
 
-    await db.query(
-      `
-        UPDATE email_jobs
-        SET status = $1,
-            retry_count = $2,
-            next_attempt_at = $3,
-            failed_reason = $4
-        WHERE id = $5
-      `,
-      [
-        isPermanent ? "FAILED" : "QUEUED",
-        newRetryCount,
-        isPermanent ? null : nextAttemptAt,
-        error.message || "Unknown error",
-        job.id,
-      ],
-    );
-
-    console.error(`[EmailWorker] Job ${job.id} failed (Attempt ${newRetryCount}/${job.max_retries}): ${error.message}`);
+    await emailQueue.incrementRetry(job.id, nextAttemptAt, error.message || "Unknown error");
+    console.warn(`[EmailWorker] Job ${job.id} failed (Attempt ${newRetryCount}/${job.maxRetries}). Retrying at ${nextAttemptAt.toISOString()}`);
   }
 
   /**
    * Returns queue metrics for monitoring
    */
   public async getMetrics() {
-    const { rows } = await db.query(`
-      SELECT 
-        status, 
-        priority,
-        COUNT(*) as count,
-        COALESCE(AVG(EXTRACT(EPOCH FROM (processing_started_at - queued_at))), 0) as avg_queue_latency_sec,
-        COALESCE(AVG(EXTRACT(EPOCH FROM (sent_at - processing_started_at))), 0) as avg_send_latency_sec
-      FROM email_jobs
-      GROUP BY status, priority
-    `);
-    return rows;
+    return emailQueue.getMetrics();
   }
 }
 

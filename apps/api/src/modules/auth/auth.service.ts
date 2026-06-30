@@ -9,6 +9,7 @@ import {
 import { authRepository } from "./auth.repository";
 import { db } from "../../core/database/postgres";
 import { usernameBloomFilter } from "./username-bloom-filter";
+import { sessionStore } from "./session.store";
 
 import {
   generateAccessToken,
@@ -198,7 +199,7 @@ class AuthService {
     return jwt.sign(
       { userId, type: "reauth" },
       JWT_SECRET,
-      { expiresIn: "5m" } // Short-lived (5 minutes)
+      { expiresIn: "5m" }
     );
   }
 
@@ -244,8 +245,8 @@ class AuthService {
     const passwordHash = await hashPassword(newPasswordMask);
     await authRepository.updateUserPassword(userId, passwordHash);
     
-    // Revoke all active sessions for security when password changes
-    await authRepository.revokeAllUserRefreshTokens(userId);
+    // Revoke all active sessions via Pluggable Session Store
+    await sessionStore.invalidateAllUserSessions(userId);
 
     await auditService.log({
       userId,
@@ -309,7 +310,6 @@ class AuthService {
   public async forgotPassword(email: string): Promise<void> {
     try {
       const user = await authRepository.findUserByEmail(email);
-      // Send a password-reset OTP instead of a token link
       await otpService.sendOTP(user.email, OTPPurpose.PASSWORD_RESET, user.username);
 
       await auditService.log({
@@ -332,8 +332,8 @@ class AuthService {
     const passwordHash = await hashPassword(passwordMask);
     await authRepository.updateUserPassword(user.id, passwordHash);
     
-    // Revoke all active sessions for security
-    await authRepository.revokeAllUserRefreshTokens(user.id);
+    // Revoke all active sessions via Pluggable Session Store
+    await sessionStore.invalidateAllUserSessions(user.id);
 
     await auditService.log({
       userId: user.id,
@@ -420,47 +420,22 @@ class AuthService {
       });
     }
 
-    const tokenRecord = await authRepository.findRefreshTokenById(payload.tokenId);
+    // Verify session state using pluggable Session Store
+    const isActive = await sessionStore.isSessionActive(payload.tokenId);
+    if (!isActive) {
+      throw new AppError({
+        message: "Refresh token is invalid, revoked, or expired.",
+        statusCode: 401,
+        code: "AUTH_REFRESH_TOKEN_INVALID",
+      });
+    }
 
+    const tokenRecord = await authRepository.findRefreshTokenById(payload.tokenId);
     if (!tokenRecord) {
       throw new AppError({
         message: "Refresh token not found.",
         statusCode: 401,
         code: "AUTH_REFRESH_TOKEN_NOT_FOUND",
-      });
-    }
-
-    // Reuse detection
-    if (tokenRecord.isRevoked) {
-      if (tokenRecord.replacedBy) {
-        await authRepository.revokeAllUserRefreshTokens(tokenRecord.userId);
-        
-        await auditService.log({
-          userId: tokenRecord.userId,
-          action: "REFRESH_TOKEN_REUSE_DETECTED",
-          ipAddress,
-          userAgent,
-        });
-
-        throw new AppError({
-          message: "Refresh token reuse detected. All sessions revoked.",
-          statusCode: 401,
-          code: "AUTH_REFRESH_TOKEN_REUSE",
-        });
-      }
-
-      throw new AppError({
-        message: "Refresh token has been revoked.",
-        statusCode: 401,
-        code: "AUTH_REFRESH_TOKEN_REVOKED",
-      });
-    }
-
-    if (new Date() > new Date(tokenRecord.expiresAt)) {
-      throw new AppError({
-        message: "Refresh token has expired.",
-        statusCode: 401,
-        code: "AUTH_REFRESH_TOKEN_EXPIRED",
       });
     }
 
@@ -470,6 +445,15 @@ class AuthService {
     const refreshExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     const newToken = await authRepository.replaceRefreshToken(
       tokenRecord.id,
+      user.id,
+      refreshExpiresAt,
+      ipAddress,
+      userAgent
+    );
+
+    // Cache new session in Redis
+    await sessionStore.cacheSession(
+      newToken.id,
       user.id,
       refreshExpiresAt,
       ipAddress,
@@ -504,7 +488,7 @@ class AuthService {
   public async logout(refreshToken: string): Promise<void> {
     try {
       const payload = verifyRefreshToken(refreshToken);
-      await authRepository.revokeRefreshToken(payload.tokenId);
+      await sessionStore.invalidateSession(payload.tokenId);
     } catch (err) {
       // Already cleared
     }
@@ -516,7 +500,7 @@ class AuthService {
   }
 
   public async revokeSession(tokenId: string, userId: string): Promise<void> {
-    await authRepository.revokeSession(tokenId, userId);
+    await sessionStore.invalidateSession(tokenId);
     await auditService.log({
       userId,
       action: "SESSION_REVOKED",
@@ -525,7 +509,7 @@ class AuthService {
   }
 
   public async revokeOtherSessions(userId: string, currentTokenId: string): Promise<void> {
-    await authRepository.revokeOtherSessions(userId, currentTokenId);
+    await sessionStore.invalidateOtherSessions(userId, currentTokenId);
     await auditService.log({
       userId,
       action: "ALL_OTHER_SESSIONS_REVOKED",
@@ -555,6 +539,15 @@ class AuthService {
 
     const refreshExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     const dbToken = await authRepository.createRefreshToken(
+      user.id,
+      refreshExpiresAt,
+      ipAddress,
+      userAgent
+    );
+
+    // Cache the session in the Pluggable Session Store (Redis write-through)
+    await sessionStore.cacheSession(
+      dbToken.id,
       user.id,
       refreshExpiresAt,
       ipAddress,

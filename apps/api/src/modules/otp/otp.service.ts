@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { otpRepository } from "./otp.repository";
+import { otpStore } from "./otp.store";
 import { emailService } from "../email/email.service";
 import { EmailType } from "../email/email.types";
 import { AppError } from "../../shared/errors/app-error";
@@ -25,7 +25,7 @@ class OTPService {
     username = "User",
   ): Promise<void> {
     // 1. Enforce 1-minute resend cooldown
-    const latest = await otpRepository.findLatestOTP(email, purpose);
+    const latest = await otpStore.findLatestOTP(email, purpose);
     if (latest) {
       const timeSinceLast = Date.now() - new Date(latest.createdAt).getTime();
       if (timeSinceLast < 60 * 1000) {
@@ -42,8 +42,8 @@ class OTPService {
     const otpHash = this.hashOTP(otp);
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes validity
 
-    // 3. Save to database
-    await otpRepository.createOTP(email, purpose, otpHash, expiresAt);
+    // 3. Save to pluggable store
+    await otpStore.saveOTP(email, purpose, otpHash, expiresAt);
 
     // 4. Map purpose to EmailType and template payload
     let emailType: EmailType = EmailType.EMAIL_VERIFICATION;
@@ -51,9 +51,7 @@ class OTPService {
 
     if (purpose === OTPPurpose.PASSWORD_RESET) {
       emailType = EmailType.PASSWORD_RESET;
-      payload = { username, otp }; // If template supports OTP, or we can construct a link. Since we want email OTP password reset:
-      // Wait! The user requested: "For email the user should get the OTP... and the user could only create account / reset password by verifying the OTP."
-      // So we will send the OTP!
+      payload = { username, otp };
     } else if (purpose === OTPPurpose.REAUTHENTICATION) {
       emailType = EmailType.EMAIL_VERIFICATION;
       payload = { username, otp, subject: "Re-authentication Code" };
@@ -68,7 +66,7 @@ class OTPService {
     purpose: OTPPurposeType,
     otp: string,
   ): Promise<boolean> {
-    const record = await otpRepository.findLatestOTP(email, purpose);
+    const record = await otpStore.findLatestOTP(email, purpose);
     if (!record) {
       throw new AppError({
         message: "Verification code not found. Please request a new one.",
@@ -79,7 +77,7 @@ class OTPService {
 
     // Check expiration
     if (new Date() > new Date(record.expiresAt)) {
-      await otpRepository.deleteOTP(record.id);
+      await otpStore.deleteOTP(record.id, email, purpose);
       throw new AppError({
         message: "Verification code has expired. Please request a new one.",
         statusCode: 400,
@@ -89,7 +87,7 @@ class OTPService {
 
     // Check attempts limit (5 max)
     if (record.attempts >= 5) {
-      await otpRepository.deleteOTP(record.id);
+      await otpStore.deleteOTP(record.id, email, purpose);
       throw new AppError({
         message: "Too many failed attempts. Please request a new code.",
         statusCode: 400,
@@ -105,9 +103,9 @@ class OTPService {
     );
 
     if (!isMatch) {
-      const currentAttempts = await otpRepository.incrementAttempts(record.id);
+      const currentAttempts = await otpStore.incrementAttempts(record.id, email, purpose);
       if (currentAttempts >= 5) {
-        await otpRepository.deleteOTP(record.id);
+        await otpStore.deleteOTP(record.id, email, purpose);
         throw new AppError({
           message: "Too many failed attempts. Please request a new code.",
           statusCode: 400,
@@ -123,7 +121,7 @@ class OTPService {
     }
 
     // Success: delete OTP immediately (single-use)
-    await otpRepository.deleteOTP(record.id);
+    await otpStore.deleteOTP(record.id, email, purpose);
     return true;
   }
 }
