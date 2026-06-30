@@ -1,6 +1,7 @@
 import { AppError } from "../../shared/errors/app-error";
 
 export class UserAlreadyExistsError extends AppError {
+  public readonly field: "username" | "email" | "phoneNumber";
   constructor(field: "username" | "email" | "phoneNumber") {
     super({
       message: `${field} already exists.`,
@@ -10,6 +11,7 @@ export class UserAlreadyExistsError extends AppError {
         [field]: [`${field} already exists.`],
       },
     });
+    this.field = field;
   }
 }
 

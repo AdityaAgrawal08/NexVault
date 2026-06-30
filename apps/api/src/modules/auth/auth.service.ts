@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
+import { PoolClient } from "pg";
 
 import {
   hashPassword,
@@ -100,7 +101,7 @@ class AuthService {
     }
 
     try {
-      // 1. Check if password has been breached
+      // 1. Check if password has been breached (HaveIBeenPwned)
       const isBreached = await pwnedPasswordService.isPasswordBreached(input.password);
       if (isBreached) {
         throw new AppError({
@@ -113,36 +114,6 @@ class AuthService {
       // 2. Verify OTP
       await otpService.verifyOTP(input.email, OTPPurpose.EMAIL_VERIFICATION, input.otp);
 
-      // 3. Pre-check username availability
-      try {
-        await authRepository.findUserByUsername(input.username);
-        throw new UserAlreadyExistsError("username");
-      } catch (error) {
-        if (!(error instanceof UserNotFoundError)) {
-          throw error;
-        }
-      }
-
-      // 4. Pre-check email availability
-      try {
-        await authRepository.findUserByEmail(input.email);
-        throw new UserAlreadyExistsError("email");
-      } catch (error) {
-        if (!(error instanceof UserNotFoundError)) {
-          throw error;
-        }
-      }
-
-      // 5. Pre-check phone number availability
-      try {
-        await authRepository.findUserByPhone(input.phoneNumber);
-        throw new UserAlreadyExistsError("phoneNumber");
-      } catch (error) {
-        if (!(error instanceof UserNotFoundError)) {
-          throw error;
-        }
-      }
-
       const passwordHash = await hashPassword(input.password);
 
       const createUserInput: CreateUserInput = {
@@ -152,25 +123,48 @@ class AuthService {
         passwordHash,
       };
 
-      const user = await authRepository.createUser(createUserInput);
-      
-      // Mark user as verified since they verified their OTP during registration
-      await authRepository.verifyUser(user.id);
+      // 3. Perform Atomic Registration within a transaction
+      const client = await db.connect();
+      try {
+        await client.query("BEGIN");
 
-      // Enqueue a Welcome email
-      await emailService.enqueue(user.email, EmailType.WELCOME, {
-        username: user.username,
-      });
+        // Attempt user creation (will throw UserAlreadyExistsError on unique violation)
+        const user = await authRepository.createUser(createUserInput, client);
+        
+        // Verify user immediately
+        await client.query(
+          `UPDATE users SET is_verified = TRUE WHERE id = $1`,
+          [user.id]
+        );
 
-      // Log registration
-      await auditService.log({
-        userId: user.id,
-        action: "ACCOUNT_CREATED",
-        metadata: { username: user.username, email: user.email },
-      });
+        // Log registration
+        await client.query(
+          `
+            INSERT INTO audit_logs (user_id, action, metadata)
+            VALUES ($1, $2, $3)
+          `,
+          [
+            user.id,
+            "ACCOUNT_CREATED",
+            JSON.stringify({ username: user.username, email: user.email }),
+          ]
+        );
 
-      usernameBloomFilter.add(user.username.toLowerCase());
-      return user;
+        await client.query("COMMIT");
+
+        // 4. Post-transaction operations
+        await emailService.enqueue(user.email, EmailType.WELCOME, {
+          username: user.username,
+        });
+
+        usernameBloomFilter.add(user.username.toLowerCase());
+        return user;
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
     } finally {
       await lockService.releaseLock(lockKey, lockToken);
     }
@@ -455,19 +449,38 @@ class AuthService {
         const passwordHash = await hashPassword(tempPassword);
         const phone = "0000000000"; // placeholder
 
-        // Handle username clashes
+        // 1. Concurrency-Safe Username Generation Bounded Loop
         let username = profile.username;
-        try {
-          await authRepository.findUserByUsername(username);
-          username = `${username}_${crypto.randomBytes(4).toString("hex")}`;
-        } catch (uErr) {}
+        let created: any = null;
+        let attempts = 0;
+        const maxAttempts = 5;
 
-        const created = await authRepository.createUser({
-          username,
-          email: profile.email,
-          phoneNumber: phone,
-          passwordHash,
-        });
+        while (attempts < maxAttempts) {
+          try {
+            created = await authRepository.createUser({
+              username,
+              email: profile.email,
+              phoneNumber: phone,
+              passwordHash,
+            });
+            break; // Success!
+          } catch (createErr) {
+            if (createErr instanceof UserAlreadyExistsError && createErr.field === "username") {
+              attempts++;
+              username = `${profile.username}_${crypto.randomBytes(4).toString("hex")}`;
+            } else {
+              throw createErr; // Email/phone clash or other error, propagate immediately
+            }
+          }
+        }
+
+        if (!created) {
+          throw new AppError({
+            message: "Could not allocate a unique username after 5 attempts.",
+            statusCode: 409,
+            code: "AUTH_USERNAME_ALLOCATION_FAILED",
+          });
+        }
 
         await authRepository.verifyUser(created.id);
         user = await authRepository.findUserById(created.id);

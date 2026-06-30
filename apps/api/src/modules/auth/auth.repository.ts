@@ -1,4 +1,4 @@
-import { DatabaseError } from "pg";
+import pg, { DatabaseError, PoolClient } from "pg";
 import crypto from "crypto";
 
 import { db } from "../../core/database/postgres";
@@ -30,6 +30,7 @@ export interface RefreshTokenRecord {
 export class AuthRepository {
   public async createUser(
     input: CreateUserInput,
+    client?: PoolClient,
   ): Promise<CreateUserResult> {
     const {
       username,
@@ -38,11 +39,13 @@ export class AuthRepository {
       passwordHash,
     } = input;
 
+    const dbClient = (client || db) as any;
+
     try {
       // Determine role: if username is "Admin" or "aditya", make them ADMIN
       const role = (username.toLowerCase() === "admin" || username.toLowerCase() === "aditya") ? "ADMIN" : "USER";
 
-      const { rows } = await db.query<CreateUserResult>(
+      const { rows } = await dbClient.query(
         `
           INSERT INTO users (
             username,
