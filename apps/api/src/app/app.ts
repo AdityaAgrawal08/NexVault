@@ -1,4 +1,5 @@
 import express from "express";
+import path from "path";
 import routes from "./routes";
 import cors from "cors";
 import cookieParser from "cookie-parser";
@@ -11,7 +12,7 @@ export const app = express();
 
 app.use(
   cors({
-    origin: ["http://localhost:3001", "http://localhost:5173", "http://localhost:3000"],
+    origin: ["http://localhost:3001", "http://localhost:5173", "http://localhost:3000", "https://NexVault.shooterdelta.tech"],
     credentials: true,
   })
 );
@@ -31,5 +32,14 @@ app.get("/metrics", async (req, res) => {
   res.end(metrics);
 });
 
-app.use(routes);
+app.use("/api", routes);
+
+if (process.env["NODE_ENV"] === "production") {
+  const distPath = path.join(__dirname, "../../../web/dist");
+  app.use(express.static(distPath));
+  app.get("*", (req, res) => {
+    res.sendFile(path.join(distPath, "index.html"));
+  });
+}
+
 app.use(errorMiddleware);

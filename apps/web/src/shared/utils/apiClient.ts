@@ -1,6 +1,6 @@
 let accessToken: string | null = null;
 
-export const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || "http://localhost:3000";
+export const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || "/api";
 
 function getDeviceFingerprint(): string {
   let fp = localStorage.getItem("device_fingerprint");
