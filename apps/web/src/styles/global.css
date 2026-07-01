@@ -9,17 +9,18 @@
 
 /* ── Base ─────────────────────────────────────────────── */
 :root {
-  --color-bg: #f5f5f5;
-  --color-card: #ffffff;
-  --color-border: #d1d5db;
-  --color-text: #111827;
-  --color-muted: #6b7280;
-  --color-accent: #2563eb;
-  --color-accent-hover: #1d4ed8;
-  --color-error: #dc2626;
-  --color-success: #16a34a;
+  --color-bg: #0b0f19;
+  --color-card: #131b2e;
+  --color-border: #1e293b;
+  --color-text: #f3f4f6;
+  --color-muted: #94a3b8;
+  --color-accent: #3b82f6;
+  --color-accent-hover: #2563eb;
+  --color-error: #ef4444;
+  --color-success: #10b981;
   --radius: 6px;
   --font: system-ui, -apple-system, sans-serif;
+  --color-foreground: var(--color-text);
 }
 
 body {
@@ -96,7 +97,7 @@ input {
   border-radius: var(--radius);
   font-size: 14px;
   color: var(--color-text);
-  background: #fff;
+  background: #0b0f19;
   outline: none;
   transition: border-color 0.15s;
 }
@@ -119,15 +120,15 @@ input:focus {
   padding: 8px 12px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
-  background: #f9fafb;
+  background: #1e293b;
   font-size: 13px;
   cursor: pointer;
   white-space: nowrap;
-  color: var(--color-muted);
+  color: var(--color-text);
 }
 
 .toggle-btn:hover {
-  background: #f3f4f6;
+  background: #334155;
 }
 
 /* ── Validation feedback ──────────────────────────────── */
