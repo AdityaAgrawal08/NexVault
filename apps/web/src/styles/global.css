@@ -9,26 +9,34 @@
 
 /* ── Base ─────────────────────────────────────────────── */
 :root {
-  --color-bg: #0b0f19;
-  --color-card: #131b2e;
-  --color-border: #1e293b;
-  --color-text: #f3f4f6;
-  --color-muted: #94a3b8;
+  --color-bg: #0d1117;
+  --color-card: #161b22;
+  --color-surface: #21262d;
+  --color-border: #30363d;
+  --color-text: #f8fafc;
+  --color-muted: #9ca3af;
   --color-accent: #3b82f6;
   --color-accent-hover: #2563eb;
   --color-error: #ef4444;
-  --color-success: #10b981;
-  --radius: 6px;
-  --font: system-ui, -apple-system, sans-serif;
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --color-foreground: var(--color-text);
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 250ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 body {
   font-family: var(--font);
   background-color: var(--color-bg);
+  background-image: radial-gradient(circle at top, rgba(59, 130, 246, 0.05), transparent 80%);
   color: var(--color-text);
   font-size: 15px;
   line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* ── Layout ───────────────────────────────────────────── */
@@ -43,45 +51,69 @@ body {
 .card {
   background: var(--color-card);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  padding: 36px 32px;
+  border-radius: var(--radius-lg);
+  padding: 40px 32px;
   width: 100%;
-  max-width: 420px;
+  max-width: 460px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.3);
+  animation: cardFadeIn 350ms cubic-bezier(0.16, 1, 0.3, 1);
+  box-sizing: border-box;
+}
+
+@keyframes cardFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* ── Brand ────────────────────────────────────────────── */
 .brand {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 24px;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 28px;
 }
 
 .brand-logo {
-  font-size: 22px;
+  font-size: 26px;
   color: var(--color-accent);
+  filter: drop-shadow(0 0 8px rgba(59, 130, 246, 0.4));
+  animation: pulseLogo 3s ease-in-out infinite;
+}
+
+@keyframes pulseLogo {
+  0%, 100% { filter: drop-shadow(0 0 8px rgba(59, 130, 246, 0.4)); }
+  50% { filter: drop-shadow(0 0 14px rgba(59, 130, 246, 0.7)); }
 }
 
 .brand-name {
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 700;
-  letter-spacing: -0.3px;
+  letter-spacing: -0.5px;
   color: var(--color-text);
 }
 
 /* ── Card heading ─────────────────────────────────────── */
 .card-title {
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 600;
-  margin-bottom: 20px;
+  text-align: center;
+  margin-bottom: 24px;
+  color: var(--color-text);
 }
 
 /* ── Form fields ──────────────────────────────────────── */
 .field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-bottom: 16px;
+  gap: 6px;
+  margin-bottom: 20px;
 }
 
 label {
@@ -92,54 +124,133 @@ label {
 
 input {
   width: 100%;
-  padding: 8px 10px;
+  padding: 10px 14px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   font-size: 14px;
   color: var(--color-text);
-  background: #0b0f19;
+  background: var(--color-bg);
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background-color var(--transition-fast);
+}
+
+input::placeholder {
+  color: var(--color-muted);
+  opacity: 0.8;
 }
 
 input:focus {
   border-color: var(--color-accent);
+  background-color: var(--color-card);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
 }
 
-/* ── Password row ─────────────────────────────────────── */
+/* ── Password and Integrated Inputs ───────────────────── */
 .input-row {
   display: flex;
-  gap: 6px;
+  position: relative;
+  width: 100%;
 }
 
+/* Eye button nested styled inside input */
 .input-row input {
+  padding-right: 42px; /* Make space for eye icon */
+}
+
+.eye-toggle-btn {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  color: var(--color-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: 4px;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.eye-toggle-btn:hover {
+  color: var(--color-text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* Visual integration for Send OTP button inside row */
+.integrated-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.integrated-row input {
   flex: 1;
 }
 
-.toggle-btn {
-  padding: 8px 12px;
+.integrated-otp-btn {
+  padding: 10px 16px;
+  background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
-  background: #1e293b;
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--transition-fast);
+}
+
+.integrated-otp-btn:hover:not(:disabled) {
+  background: var(--color-border);
+  border-color: var(--color-muted);
+}
+
+.integrated-otp-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.integrated-otp-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Legacy toggle button backup ──────────────────────── */
+.toggle-btn {
+  padding: 10px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
   font-size: 13px;
   cursor: pointer;
   white-space: nowrap;
   color: var(--color-text);
+  transition: all var(--transition-fast);
 }
 
 .toggle-btn:hover {
-  background: #334155;
+  background: var(--color-border);
 }
 
 /* ── Validation feedback ──────────────────────────────── */
 .field-error {
   font-size: 12px;
   color: var(--color-error);
+  margin-top: 4px;
+  animation: slideInDown 150ms ease-out;
+}
+
+@keyframes slideInDown {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .match-indicator {
   font-size: 12px;
   font-weight: 500;
+  margin-top: 4px;
 }
 
 .match-indicator.match {
@@ -152,10 +263,10 @@ input:focus {
 
 /* ── Password strength bar ────────────────────────────── */
 .strength-bar-wrapper {
-  margin-top: 6px;
+  margin-top: 8px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .strength-bar-track {
@@ -165,9 +276,9 @@ input:focus {
 
 .strength-bar-segment {
   flex: 1;
-  height: 4px;
-  border-radius: 2px;
-  transition: background-color 0.2s;
+  height: 5px;
+  border-radius: 3px;
+  transition: background-color var(--transition-fast);
 }
 
 .strength-label {
@@ -180,6 +291,7 @@ input:focus {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  padding-left: 4px;
 }
 
 .strength-failures li {
@@ -188,13 +300,15 @@ input:focus {
 }
 
 .strength-failures li::before {
-  content: "· ";
+  content: "• ";
+  color: var(--color-error);
+  margin-right: 4px;
 }
 
-/* ── Submit button ────────────────────────────────────── */
+/* ── Buttons ────────────────────────────────────────────── */
 .submit-btn {
   width: 100%;
-  padding: 10px;
+  padding: 11px 16px;
   background: var(--color-accent);
   color: #fff;
   border: none;
@@ -202,22 +316,29 @@ input:focus {
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  margin-top: 8px;
-  transition: background 0.15s;
+  margin-top: 10px;
+  transition: all var(--transition-fast);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
 }
 
 .submit-btn:hover:not(:disabled) {
   background: var(--color-accent-hover);
+  box-shadow: 0 4px 16px rgba(59, 130, 246, 0.35);
+}
+
+.submit-btn:active:not(:disabled) {
+  transform: scale(0.98);
 }
 
 .submit-btn:disabled {
-  opacity: 0.6;
+  opacity: 0.5;
   cursor: not-allowed;
+  box-shadow: none;
 }
 
 /* ── Switch link ──────────────────────────────────────── */
 .switch-link {
-  margin-top: 20px;
+  margin-top: 24px;
   font-size: 13px;
   color: var(--color-muted);
   text-align: center;
@@ -227,21 +348,35 @@ input:focus {
   color: var(--color-accent);
   text-decoration: none;
   font-weight: 500;
+  transition: color var(--transition-fast);
 }
 
 .switch-link a:hover {
   text-decoration: underline;
+  color: var(--color-accent-hover);
 }
 
 /* ── Form and Availability Feedback ────────────────────── */
 .form-error {
-  background-color: rgba(220, 38, 38, 0.1);
+  background-color: rgba(239, 68, 68, 0.1);
   border: 1px solid var(--color-error);
   color: var(--color-error);
-  padding: 0.75rem 1rem;
+  padding: 10px 14px;
   border-radius: var(--radius);
   font-size: 14px;
-  margin-bottom: 1rem;
+  margin-bottom: 16px;
+  animation: slideInDown 200ms ease-out;
+}
+
+.form-success {
+  background-color: rgba(34, 197, 94, 0.1);
+  border: 1px solid var(--color-success);
+  color: var(--color-success);
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  font-size: 14px;
+  margin-bottom: 16px;
+  animation: slideInDown 200ms ease-out;
 }
 
 .input-success {
@@ -255,6 +390,7 @@ input:focus {
 .availability-indicator {
   font-size: 12px;
   font-weight: 500;
+  margin-top: 4px;
 }
 
 .availability-indicator.available {
@@ -268,19 +404,19 @@ input:focus {
 
 .input-spinner {
   display: inline-block;
-  animation: spin 1.5s linear infinite;
+  animation: spin 1s linear infinite;
 }
 
 @keyframes spin {
-  0% { transform: translateY(-50%) rotate(0deg); }
-  100% { transform: translateY(-50%) rotate(360deg); }
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
 
 /* ── Profile Page ───────────────────────────────────────── */
 .profile-card {
-  padding: 2.5rem 2rem;
+  padding: 40px 32px;
   text-align: center;
-  max-width: 420px;
+  max-width: 480px;
 }
 
 .profile-header {
@@ -291,43 +427,43 @@ input:focus {
 }
 
 .profile-avatar {
-  width: 72px;
-  height: 72px;
+  width: 80px;
+  height: 80px;
   border-radius: 50%;
   background: linear-gradient(135deg, var(--color-accent) 0%, #a855f7 100%);
   color: white;
-  font-size: 24px;
+  font-size: 26px;
   font-weight: 700;
   display: flex;
   align-items: center;
   justify-content: center;
   margin-bottom: 1rem;
-  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.4);
 }
 
 .profile-title {
   font-size: 22px;
   font-weight: 700;
-  color: var(--color-foreground);
+  color: var(--color-text);
   margin: 0;
 }
 
 .profile-subtitle {
   font-size: 13px;
   color: var(--color-muted);
-  margin: 4px 0 0 0;
+  margin: 6px 0 0 0;
 }
 
 .profile-details {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius);
-  padding: 1.25rem;
+  padding: 20px;
   margin-bottom: 2rem;
   text-align: left;
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  gap: 16px;
 }
 
 .profile-field {
@@ -339,14 +475,14 @@ input:focus {
 .profile-field-label {
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.08em;
   color: var(--color-muted);
   font-weight: 600;
 }
 
 .profile-field-value {
   font-size: 15px;
-  color: var(--color-foreground);
+  color: var(--color-text);
   font-weight: 500;
 }
 
@@ -360,13 +496,13 @@ input:focus {
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all var(--transition-fast);
 }
 
 .logout-btn:hover {
   background: var(--color-error);
   color: white;
-  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.2);
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
 }
 
 /* ── Divider ─────────────────────────────────────────── */
@@ -374,7 +510,7 @@ input:focus {
   display: flex;
   align-items: center;
   text-align: center;
-  margin: 1.5rem 0;
+  margin: 24px 0;
   color: var(--color-muted);
   font-size: 12px;
 }
@@ -383,22 +519,23 @@ input:focus {
 .divider::after {
   content: '';
   flex: 1;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .divider:not(:empty)::before {
-  margin-right: .5em;
+  margin-right: .75em;
 }
 
 .divider:not(:empty)::after {
-  margin-left: .5em;
+  margin-left: .75em;
 }
 
-/* ── Social Buttons ──────────────────────────────────── */
+/* ── Social Buttons (OAuth) ───────────────────────────── */
 .social-buttons {
   display: flex;
   gap: 12px;
-  margin-bottom: 1.5rem;
+  margin-bottom: 24px;
+  width: 100%;
 }
 
 .social-btn {
@@ -406,36 +543,83 @@ input:focus {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 10px;
+  gap: 10px;
+  padding: 11px;
   border-radius: var(--radius);
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s ease;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.02);
-  color: var(--color-foreground);
+  transition: all var(--transition-fast);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
 }
 
 .social-btn:hover {
-  background: rgba(255, 255, 255, 0.05);
-  border-color: rgba(255, 255, 255, 0.15);
+  background: var(--color-border);
+  border-color: var(--color-muted);
+}
+
+.social-btn:active {
+  transform: scale(0.97);
 }
 
 .social-icon {
-  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .google-btn:hover {
-  border-color: #4285F4;
-  color: #4285F4;
-  background: rgba(66, 133, 244, 0.05);
+  border-color: rgba(66, 133, 244, 0.6);
+  background: rgba(66, 133, 244, 0.08);
 }
 
 .github-btn:hover {
-  border-color: #ffffff;
-  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.5);
   background: rgba(255, 255, 255, 0.05);
 }
 
+/* ── Responsive Styling ─────────────────────────────── */
+@media (max-width: 520px) {
+  .card {
+    padding: 32px 24px;
+    max-width: 100%;
+    border-radius: var(--radius);
+    box-shadow: none;
+    border: none;
+    background: transparent;
+  }
+
+  .page-center {
+    padding: 16px 12px;
+    align-items: flex-start;
+  }
+
+  .brand {
+    margin-bottom: 20px;
+  }
+
+  .submit-btn {
+    padding: 12px 16px;
+  }
+
+  .social-buttons {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .social-btn {
+    width: 100%;
+  }
+
+  .integrated-row {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .integrated-otp-btn {
+    width: 100%;
+    padding: 12px;
+  }
+}
