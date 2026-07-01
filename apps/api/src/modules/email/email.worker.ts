@@ -1,12 +1,30 @@
 import { EmailType, EmailPriority, EmailPriorityType } from "./email.types";
 import { templates } from "./templates";
-import { MockEmailProvider, EmailProvider } from "./email.provider";
+import { MockEmailProvider, ResendEmailProvider, EmailProvider } from "./email.provider";
 import { emailQueue, EmailJob } from "./email.queue";
 
 class EmailWorker {
   private active = false;
   private intervalId: NodeJS.Timeout | null = null;
   private provider: EmailProvider = new MockEmailProvider();
+
+  constructor() {
+    this.initializeProvider();
+  }
+
+  private initializeProvider() {
+    const providerType = process.env["EMAIL_PROVIDER"] || "mock";
+    const apiKey = process.env["RESEND_API_KEY"];
+    const from = process.env["EMAIL_FROM"] || "onboarding@resend.dev";
+
+    if (providerType === "resend" && apiKey) {
+      this.provider = new ResendEmailProvider(apiKey, from);
+      console.log(`[EmailWorker] Initialized Resend email provider (From: ${from})`);
+    } else {
+      this.provider = new MockEmailProvider();
+      console.log(`[EmailWorker] Initialized Mock email provider (logs to console)`);
+    }
+  }
 
   public setProvider(provider: EmailProvider) {
     this.provider = provider;

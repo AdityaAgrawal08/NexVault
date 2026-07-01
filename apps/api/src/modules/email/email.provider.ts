@@ -43,9 +43,42 @@ Text Body:  ${text}
 // Stubs for production providers
 export class ResendEmailProvider implements EmailProvider {
   public name = "Resend";
-  public async send(to: string, subject: string, html: string, text: string) {
-    console.log(`[Resend] Stub send to ${to}`);
-    return { messageId: `resend-${crypto.randomUUID()}` };
+  private apiKey: string;
+  private from: string;
+
+  constructor(apiKey: string, from: string) {
+    this.apiKey = apiKey;
+    this.from = from;
+  }
+
+  public async send(
+    to: string,
+    subject: string,
+    html: string,
+    text: string,
+  ): Promise<{ messageId: string }> {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${this.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: this.from,
+        to: to,
+        subject: subject,
+        html: html,
+        text: text,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Resend API error (${response.status}): ${errorText}`);
+    }
+
+    const data = (await response.json()) as { id: string };
+    return { messageId: data.id };
   }
 }
 
