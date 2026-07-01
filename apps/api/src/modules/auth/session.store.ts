@@ -1,5 +1,6 @@
 import { redis } from "../../core/database/redis";
 import { authRepository } from "./auth.repository";
+import { metricsService } from "../../core/monitoring/metrics.service";
 
 export interface SessionStore {
   cacheSession(
@@ -11,6 +12,7 @@ export interface SessionStore {
     deviceFingerprint?: string | null
   ): Promise<void>;
   isSessionActive(tokenId: string): Promise<boolean>;
+  getSessionData(tokenId: string): Promise<any | null>;
   invalidateSession(tokenId: string): Promise<void>;
   invalidateAllUserSessions(userId: string, reason?: string): Promise<void>;
   invalidateOtherSessions(userId: string, currentTokenId: string): Promise<void>;
@@ -55,20 +57,38 @@ class PluggableSessionStore implements SessionStore {
     }
   }
 
-  public async isSessionActive(tokenId: string): Promise<boolean> {
+  public async getSessionData(tokenId: string): Promise<any | null> {
     if (redis) {
       const key = this.getSessionKey(tokenId);
       const cached = await redis.get(key);
       if (cached) {
-        return true;
+        metricsService.recordCacheHit();
+        if (cached === "revoked") {
+          return null;
+        }
+        return JSON.parse(cached);
       }
+      metricsService.recordCacheMiss();
     }
 
     // Fallback to database check
     const tokenRecord = await authRepository.findRefreshTokenById(tokenId);
     if (!tokenRecord || tokenRecord.isRevoked || new Date() > new Date(tokenRecord.expiresAt)) {
-      return false;
+      if (redis) {
+        const key = this.getSessionKey(tokenId);
+        // Cache the revoked/invalid state for 5 minutes (300 seconds) to avoid database hammering
+        await redis.set(key, "revoked", "EX", 300);
+      }
+      return null;
     }
+
+    const sessionData = {
+      userId: tokenRecord.userId,
+      ipAddress: tokenRecord.ipAddress,
+      userAgent: tokenRecord.userAgent,
+      deviceFingerprint: tokenRecord.deviceFingerprint,
+      expiresAt: tokenRecord.expiresAt,
+    };
 
     // If it was in Postgres but not Redis, re-cache it in Redis
     if (redis) {
@@ -82,7 +102,12 @@ class PluggableSessionStore implements SessionStore {
       );
     }
 
-    return true;
+    return sessionData;
+  }
+
+  public async isSessionActive(tokenId: string): Promise<boolean> {
+    const session = await this.getSessionData(tokenId);
+    return session !== null;
   }
 
   public async invalidateSession(tokenId: string): Promise<void> {

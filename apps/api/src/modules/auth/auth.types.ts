@@ -56,9 +56,10 @@ export type AuthenticatedUser = {
 };
 
 export type LoginResult = {
-  user: AuthenticatedUser;
-  accessToken: string;
-  refreshToken: string;
+  user?: AuthenticatedUser;
+  accessToken?: string;
+  refreshToken?: string;
+  sessionsRevoked?: boolean;
 };
 
 export type AccessTokenPayload = {

@@ -1,8 +1,7 @@
 import type { ErrorRequestHandler } from "express";
-
 import { ZodError } from "zod";
-
 import { AppError } from "../errors/app-error";
+import { metricsService } from "../../core/monitoring/metrics.service";
 
 export const errorMiddleware: ErrorRequestHandler = (
   error,
@@ -10,6 +9,7 @@ export const errorMiddleware: ErrorRequestHandler = (
   res,
   _next,
 ) => {
+  metricsService.incrementErrors();
   if (error instanceof ZodError) {
     return res.status(400).json({
       message: "Validation failed.",

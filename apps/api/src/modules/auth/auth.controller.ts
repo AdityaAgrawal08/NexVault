@@ -161,6 +161,13 @@ class AuthController {
 
     const result = await authService.login(req.body, ip, ua, fingerprint);
 
+    if (result.sessionsRevoked) {
+      return res.status(200).json({
+        message: "All other sessions have been logged out. Please log in again.",
+        code: "AUTH_CONCURRENT_SESSIONS_REVOKED",
+      });
+    }
+
     res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
 
     return res.status(200).json({
@@ -229,6 +236,13 @@ class AuthController {
       email,
       username,
     }, ip, ua, fingerprint);
+
+    if (result.sessionsRevoked) {
+      return res.status(200).json({
+        message: "All other sessions have been logged out. Please log in again.",
+        code: "AUTH_CONCURRENT_SESSIONS_REVOKED",
+      });
+    }
 
     res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
 

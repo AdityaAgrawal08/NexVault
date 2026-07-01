@@ -1,4 +1,5 @@
 import pg from "pg";
+import { metricsService } from "../monitoring/metrics.service";
 
 const { Pool } = pg;
 
@@ -25,12 +26,26 @@ export const db = {
   /**
    * Execute a query on the primary database writer (for INSERT, UPDATE, DELETE).
    */
-  query: <T extends pg.QueryResultRow = any>(text: string, params?: any[]) => writePool.query<T>(text, params),
+  query: async <T extends pg.QueryResultRow = any>(text: string, params?: any[]) => {
+    const start = Date.now();
+    try {
+      return await writePool.query<T>(text, params);
+    } finally {
+      metricsService.recordDbQuery(Date.now() - start);
+    }
+  },
   
   /**
    * Execute a query on the read replica pool (for SELECT).
    */
-  readQuery: <T extends pg.QueryResultRow = any>(text: string, params?: any[]) => readPool.query<T>(text, params),
+  readQuery: async <T extends pg.QueryResultRow = any>(text: string, params?: any[]) => {
+    const start = Date.now();
+    try {
+      return await readPool.query<T>(text, params);
+    } finally {
+      metricsService.recordDbQuery(Date.now() - start);
+    }
+  },
   
   /**
    * Get a client from the primary writer pool (e.g. for transactions).

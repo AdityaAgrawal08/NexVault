@@ -10,6 +10,17 @@ import { metricsService } from "../core/monitoring/metrics.service";
 
 export const app = express();
 
+// Latency & Metrics Tracking Middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on("finish", () => {
+    const duration = Date.now() - start;
+    const hasError = res.statusCode >= 400;
+    metricsService.recordRequest(duration, hasError);
+  });
+  next();
+});
+
 app.use(
   cors({
     origin: ["http://localhost:3001", "http://localhost:5173", "http://localhost:3000", "https://NexVault.shooterdelta.tech"],

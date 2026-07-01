@@ -94,6 +94,8 @@ export async function apiRequest(url: string, options: RequestOptions = {}): Pro
         if (!retryResponse.ok) {
           const error = new Error(retryResult.message || "Request failed after token refresh.");
           (error as any).errors = retryResult.errors;
+          (error as any).code = retryResult.code;
+          (error as any).statusCode = retryResult.statusCode || retryResponse.status;
           throw error;
         }
         return retryResult;
@@ -110,7 +112,10 @@ export async function apiRequest(url: string, options: RequestOptions = {}): Pro
         } else {
           window.location.href = "/login";
         }
-        throw new Error(refreshErrorData?.message || "Session expired. Please log in again.");
+        const error = new Error(refreshErrorData?.message || "Session expired. Please log in again.");
+        (error as any).code = refreshErrorData?.code;
+        (error as any).statusCode = refreshErrorData?.statusCode || refreshResponse.status;
+        throw error;
       }
     } catch (err) {
       clearSession();
@@ -123,6 +128,8 @@ export async function apiRequest(url: string, options: RequestOptions = {}): Pro
   if (!response.ok) {
     const error = new Error(result.message || "Request failed.");
     (error as any).errors = result.errors;
+    (error as any).code = result.code;
+    (error as any).statusCode = result.statusCode || response.status;
     throw error;
   }
 

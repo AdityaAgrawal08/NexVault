@@ -1,111 +1,82 @@
 import { Request, Response, NextFunction } from "express";
-import crypto from "crypto";
 import { AppError } from "../errors/app-error";
 import { redis } from "../../core/database/redis";
 import { metricsService } from "../../core/monitoring/metrics.service";
 
 interface RateLimitStore {
-  checkLimit(ip: string, windowMs: number, maxRequests: number): Promise<{
+  checkLimit(ip: string, windowMs: number, maxRequests: number, policyKey: string): Promise<{
     allowed: boolean;
     currentCount: number;
     resetTime: number;
   }>;
 }
 
-// 1. In-Memory Sliding Window Rate Limiter
+// 1. In-Memory Token Bucket Rate Limiter
 class InMemoryRateLimitStore implements RateLimitStore {
-  private ipRecords = new Map<string, { timestamps: number[] }>();
+  private buckets = new Map<string, { tokens: number; lastRefreshed: number }>();
 
   constructor() {
-    // Clean up old records periodically to prevent memory leaks
+    // Clean up idle buckets periodically to prevent memory leaks
     setInterval(() => {
       const now = Date.now();
-      for (const [ip, record] of this.ipRecords.entries()) {
-        const validTimestamps = record.timestamps.filter((t) => now - t < 10 * 60 * 1000);
-        if (validTimestamps.length === 0) {
-          this.ipRecords.delete(ip);
-        } else {
-          record.timestamps = validTimestamps;
+      for (const [key, state] of this.buckets.entries()) {
+        if (now - state.lastRefreshed > 10 * 60 * 1000) {
+          this.buckets.delete(key);
         }
       }
     }, 10 * 60 * 1000).unref();
   }
 
-  public async checkLimit(ip: string, windowMs: number, maxRequests: number) {
+  public async checkLimit(ip: string, windowMs: number, maxRequests: number, policyKey: string) {
+    const key = `${ip}:${policyKey}`;
     const now = Date.now();
-    let record = this.ipRecords.get(ip);
-    if (!record) {
-      record = { timestamps: [] };
-      this.ipRecords.set(ip, record);
+    const capacity = maxRequests;
+    const refillRate = maxRequests / windowMs; // tokens per ms
+
+    let state = this.buckets.get(key);
+    if (!state) {
+      state = { tokens: capacity, lastRefreshed: now };
+      this.buckets.set(key, state);
+    } else {
+      const elapsed = Math.max(0, now - state.lastRefreshed);
+      const refilled = elapsed * refillRate;
+      state.tokens = Math.min(capacity, state.tokens + refilled);
+      state.lastRefreshed = now;
     }
 
-    record.timestamps = record.timestamps.filter((t) => now - t < windowMs);
-
-    if (record.timestamps.length >= maxRequests) {
-      const oldestTimestamp = record.timestamps[0] || now;
-      return {
-        allowed: false,
-        currentCount: record.timestamps.length,
-        resetTime: oldestTimestamp + windowMs,
-      };
+    let allowed = false;
+    if (state.tokens >= 1) {
+      state.tokens -= 1;
+      allowed = true;
     }
 
-    record.timestamps.push(now);
     return {
-      allowed: true,
-      currentCount: record.timestamps.length,
-      resetTime: now + windowMs,
+      allowed,
+      currentCount: Math.ceil(capacity - state.tokens),
+      resetTime: now + Math.ceil((capacity - state.tokens) / refillRate),
     };
   }
 }
 
-// 2. Redis Sliding Window Rate Limiter (using atomic Transaction/Pipeline)
+// 2. Redis Token Bucket Rate Limiter (using atomic Lua command)
 class RedisRateLimitStore implements RateLimitStore {
-  public async checkLimit(ip: string, windowMs: number, maxRequests: number) {
+  public async checkLimit(ip: string, windowMs: number, maxRequests: number, policyKey: string) {
     if (!redis) {
       throw new Error("Redis client is not initialized.");
     }
 
-    const key = `ratelimit:${ip}`;
+    const key = `ratelimit:${ip}:${policyKey}`;
     const now = Date.now();
-    const clearBefore = now - windowMs;
+    const capacity = maxRequests;
+    const refillRate = maxRequests / windowMs; // tokens per ms
 
-    // Use transaction to execute multiple commands atomically
-    const results = await redis
-      .multi()
-      .zremrangebyscore(key, 0, clearBefore) // Remove expired requests
-      .zcard(key)                            // Get count of requests in current window
-      .exec();
-
-    if (!results) {
-      throw new Error("Redis transaction failed.");
-    }
-
-    // zremrangebyscore result is at index 0, zcard is at index 1
-    const count = (results && results[1] && (results[1][1] as number)) || 0;
-
-    if (count >= maxRequests) {
-      // Get the oldest request in the set to calculate exact reset time
-      const oldest = await redis.zrange(key, 0, 0, "WITHSCORES");
-      const oldestScore = oldest[1] ? parseInt(oldest[1], 10) : now;
-      
-      return {
-        allowed: false,
-        currentCount: count,
-        resetTime: oldestScore + windowMs,
-      };
-    }
-
-    // Add current request to the set and set expiry on the key (windowMs in seconds)
-    const pipeline = redis.pipeline();
-    pipeline.zadd(key, now, `${now}-${crypto.randomUUID ? crypto.randomUUID() : Math.random()}`);
-    pipeline.expire(key, Math.ceil(windowMs / 1000) + 5); // Add 5s buffer to TTL
-    await pipeline.exec();
+    const [allowedVal, remainingTokens] = await redis.checkTokenBucket(key, capacity, refillRate, now, 1);
+    const allowed = allowedVal === 1;
 
     return {
-      allowed: true,
-      currentCount: count + 1,
-      resetTime: now + windowMs,
+      allowed,
+      currentCount: Math.ceil(capacity - remainingTokens),
+      resetTime: now + Math.ceil((capacity - remainingTokens) / refillRate),
     };
   }
 }
@@ -113,18 +84,79 @@ class RedisRateLimitStore implements RateLimitStore {
 // Choose store based on Redis availability
 const rateLimitStore: RateLimitStore = redis ? new RedisRateLimitStore() : new InMemoryRateLimitStore();
 
-export function rateLimiter(windowMs: number, maxRequests: number) {
+export interface RateLimitPolicy {
+  capacity: number;
+  refillRate: number;
+  windowMs: number;
+  maxRequests: number;
+}
+
+export const POLICIES: Record<string, RateLimitPolicy> = {
+  global: {
+    capacity: 200,
+    refillRate: 200 / 60000,
+    windowMs: 60000,
+    maxRequests: 200,
+  },
+  auth: {
+    capacity: 15,
+    refillRate: 15 / 60000,
+    windowMs: 60000,
+    maxRequests: 15,
+  },
+  otp: {
+    capacity: 3,
+    refillRate: 3 / 60000,
+    windowMs: 60000,
+    maxRequests: 3,
+  },
+  reset: {
+    capacity: 5,
+    refillRate: 5 / 60000,
+    windowMs: 60000,
+    maxRequests: 5,
+  },
+  api: {
+    capacity: 100,
+    refillRate: 100 / 60000,
+    windowMs: 60000,
+    maxRequests: 100,
+  },
+};
+
+// Overload signatures for backward compatibility
+export function rateLimiter(policyName: keyof typeof POLICIES): (req: Request, res: Response, next: NextFunction) => Promise<void>;
+export function rateLimiter(windowMs: number, maxRequests: number): (req: Request, res: Response, next: NextFunction) => Promise<void>;
+
+export function rateLimiter(param1: number | keyof typeof POLICIES, param2?: number) {
+  let policy: RateLimitPolicy;
+  let policyKey: string;
+
+  if (typeof param1 === "string" && POLICIES[param1]) {
+    policy = POLICIES[param1];
+    policyKey = param1;
+  } else {
+    const windowMs = param1 as number;
+    const maxRequests = param2 as number;
+    policyKey = `custom:${windowMs}:${maxRequests}`;
+    policy = {
+      capacity: maxRequests,
+      refillRate: maxRequests / windowMs,
+      windowMs,
+      maxRequests,
+    };
+  }
+
   return async (req: Request, res: Response, next: NextFunction) => {
     const ip = req.ip || req.socket.remoteAddress || "unknown";
     const now = Date.now();
 
     try {
-      const result = await rateLimitStore.checkLimit(ip, windowMs, maxRequests);
+      const result = await rateLimitStore.checkLimit(ip, policy.windowMs, policy.maxRequests, policyKey);
+      const retryAfterSeconds = Math.max(1, Math.ceil((result.resetTime - now) / 1000));
 
-      const retryAfterSeconds = Math.ceil((result.resetTime - now) / 1000);
-
-      res.setHeader("X-RateLimit-Limit", maxRequests);
-      res.setHeader("X-RateLimit-Remaining", Math.max(0, maxRequests - result.currentCount));
+      res.setHeader("X-RateLimit-Limit", policy.maxRequests);
+      res.setHeader("X-RateLimit-Remaining", Math.max(0, policy.maxRequests - result.currentCount));
       res.setHeader("X-RateLimit-Reset", Math.ceil(result.resetTime / 1000));
 
       if (!result.allowed) {
@@ -141,9 +173,8 @@ export function rateLimiter(windowMs: number, maxRequests: number) {
 
       next();
     } catch (err) {
-      // Fail-open: if Redis or rate limiting fails, log and let the request proceed to ensure availability
       console.error("[RateLimiter] Error checking rate limit:", err);
-      next();
+      next(); // Fail-open
     }
   };
 }

@@ -6,6 +6,7 @@ import { geoVelocityService } from "./geo.service";
 import { sessionStore } from "../../modules/auth/session.store";
 import { auditService } from "../../modules/audit/audit.service";
 import { authRepository } from "../../modules/auth/auth.repository";
+import { authService } from "../../modules/auth/auth.service";
 
 // Extend Request type to include user payload
 export interface AuthenticatedRequest extends Request {
@@ -47,8 +48,8 @@ export async function authMiddleware(
     const payload = verifyAccessToken(token);
 
     // 2. Validate session is still active in sessionStore
-    const isSessionActive = await sessionStore.isSessionActive(payload.tokenId);
-    if (!isSessionActive) {
+    const session = await sessionStore.getSessionData(payload.tokenId);
+    if (!session) {
       // Check the reason for revocation from the database
       const tokenRecord = await authRepository.findRefreshTokenById(payload.tokenId);
       if (tokenRecord && tokenRecord.revocationReason === "CONCURRENT_LOGIN") {
@@ -65,9 +66,40 @@ export async function authMiddleware(
         code: "AUTH_SESSION_REVOKED",
       }));
     }
-    
-    // 3. Impossible Travel / Geo-Velocity Check
+
     const ip = (req.headers["x-simulated-ip"] as string) || req.ip || req.socket.remoteAddress || "unknown";
+
+    // 3. Verify Device Fingerprint signature binding to prevent Session Hijacking
+    const currentFingerprint = authService.getDeviceFingerprintHash(
+      req.headers["user-agent"],
+      ip,
+      req.headers["x-device-fingerprint"] as string
+    );
+
+    if (session.deviceFingerprint && session.deviceFingerprint !== currentFingerprint) {
+      // Immediate revocation of the compromised session to defend against hijacking
+      await sessionStore.invalidateSession(payload.tokenId);
+
+      await auditService.log({
+        userId: payload.userId,
+        action: "SESSION_HIJACK_DETECTED",
+        ipAddress: ip,
+        userAgent: req.headers["user-agent"],
+        metadata: {
+          tokenId: payload.tokenId,
+          expectedFingerprint: session.deviceFingerprint,
+          actualFingerprint: currentFingerprint,
+        },
+      });
+
+      return next(new AppError({
+        message: "Session signature mismatch. Access denied.",
+        statusCode: 401,
+        code: "AUTH_SESSION_HIJACK_DETECTED",
+      }));
+    }
+    
+    // 4. Impossible Travel / Geo-Velocity Check
     const travelResult = await geoVelocityService.checkTravel(payload.userId, payload.tokenId, ip);
     
     if (!travelResult.allowed) {

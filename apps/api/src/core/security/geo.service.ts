@@ -1,4 +1,5 @@
 import { redis } from "../database/redis";
+import { metricsService } from "../monitoring/metrics.service";
 
 export interface GeoLocation {
   lat: number;
@@ -40,15 +41,24 @@ class GeoVelocityService {
     if (redis) {
       const redisCached = await redis.get(`geo:ip:${cleanIp}`);
       if (redisCached) {
+        metricsService.recordCacheHit();
         const parsed = JSON.parse(redisCached);
         this.localCache.set(cleanIp, parsed);
         return parsed;
       }
+      metricsService.recordCacheMiss();
     }
 
     try {
-      // 4. Fetch from public GeoIP API (ip-api.com is free and fast)
-      const res = await fetch(`http://ip-api.com/json/${cleanIp}`);
+      // 4. Fetch from public GeoIP API with a strict 500ms timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 500);
+
+      const res = await fetch(`http://ip-api.com/json/${cleanIp}`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
       if (!res.ok) throw new Error(`GeoIP lookup failed: ${res.statusText}`);
       
       const data = (await res.json()) as any;

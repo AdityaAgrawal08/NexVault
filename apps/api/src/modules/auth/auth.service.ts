@@ -49,7 +49,7 @@ const JWT_SECRET = process.env.JWT_SECRET || "super-secure-dev-jwt-secret-key-12
 
 class AuthService {
   // --- Device Fingerprint Helper ---
-  private getDeviceFingerprintHash(
+  public getDeviceFingerprintHash(
     userAgent?: string,
     ipAddress?: string,
     headerFingerprint?: string,
@@ -280,7 +280,7 @@ class AuthService {
     }
 
     if (activeSessions.length > 0 && input.force) {
-      // Option 2: Log out everywhere and continue
+      // Log out everywhere and DO NOT continue login immediately
       await auditService.log({
         userId: user.id,
         action: "GLOBAL_LOGOUT_INITIATED",
@@ -296,6 +296,10 @@ class AuthService {
         ipAddress,
         userAgent,
       });
+
+      return {
+        sessionsRevoked: true,
+      };
     }
 
     // Log successful login
@@ -672,6 +676,9 @@ class AuthService {
 
     if (activeSessions.length > 0 && force) {
       await sessionStore.invalidateAllUserSessions(user.id, "CONCURRENT_LOGIN");
+      return {
+        sessionsRevoked: true,
+      };
     }
 
     return this.generateUserSession(user, ipAddress, userAgent, deviceFingerprint);

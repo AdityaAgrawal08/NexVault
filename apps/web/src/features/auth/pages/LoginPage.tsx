@@ -18,6 +18,7 @@ export default function LoginPage() {
   const [pendingFormData, setPendingFormData] = useState<LoginFormData | null>(null);
   const [forceLoggingIn, setForceLoggingIn] = useState(false);
   const [forceLoginError, setForceLoginError] = useState<string | null>(null);
+  const [logoutSuccessMessage, setLogoutSuccessMessage] = useState("");
 
   // 2FA Verification State
   const [mfaRequired, setMfaRequired] = useState(false);
@@ -34,6 +35,7 @@ export default function LoginPage() {
     try {
       setSessionConflict(false);
       setPendingFormData(null);
+      setLogoutSuccessMessage("");
 
       const result = await apiRequest("/login", {
         method: "POST",
@@ -89,7 +91,14 @@ export default function LoginPage() {
         }),
       });
 
-      if (result.data.mfaRequired) {
+      if (result.code === "AUTH_CONCURRENT_SESSIONS_REVOKED") {
+        setSessionConflict(false);
+        setPendingFormData(null);
+        setLogoutSuccessMessage(result.message || "All other sessions have been logged out. Please log in again.");
+        return;
+      }
+
+      if (result.data && result.data.mfaRequired) {
         setMfaRequired(true);
         setMfaToken(result.data.mfaToken);
         setSessionConflict(false);
@@ -97,7 +106,7 @@ export default function LoginPage() {
         return;
       }
 
-      if (result.data.mfaSetupRequired) {
+      if (result.data && result.data.mfaSetupRequired) {
         setMfaSetupRequired(true);
         setMfaToken(result.data.mfaToken);
         setMfaSetupData(result.data.mfaSetup);
@@ -106,13 +115,15 @@ export default function LoginPage() {
         return;
       }
 
-      setAccessToken(result.data.accessToken);
-      localStorage.setItem("user", JSON.stringify(result.data.user));
-      setSessionConflict(false);
-      setPendingFormData(null);
-      navigate("/profile");
+      if (result.data) {
+        setAccessToken(result.data.accessToken);
+        localStorage.setItem("user", JSON.stringify(result.data.user));
+        setSessionConflict(false);
+        setPendingFormData(null);
+        navigate("/profile");
+      }
     } catch (err: any) {
-      setForceLoginError(err.message || "Failed to log out other devices and log in.");
+      setForceLoginError(err.message || "Failed to log out other devices.");
     } finally {
       setForceLoggingIn(false);
     }
@@ -433,6 +444,21 @@ export default function LoginPage() {
             textAlign: "center"
           }}>
             Your session has ended because your account was signed in from another device.
+          </div>
+        )}
+
+        {logoutSuccessMessage && (
+          <div className="form-success" role="alert" style={{
+            backgroundColor: "rgba(16, 185, 129, 0.1)",
+            border: "1px solid var(--color-success)",
+            color: "var(--color-success)",
+            padding: "0.75rem 1rem",
+            borderRadius: "var(--radius)",
+            fontSize: "14px",
+            marginBottom: "1rem",
+            textAlign: "center"
+          }}>
+            {logoutSuccessMessage}
           </div>
         )}
 

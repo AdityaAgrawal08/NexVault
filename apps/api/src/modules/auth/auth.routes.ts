@@ -7,8 +7,10 @@ import { rateLimiter } from "../../shared/middleware/rate-limiter.middleware";
 
 const router = Router();
 
-// Strict Rate Limiter for Authentication & Security Endpoints: 10 requests per minute per IP
-const authLimiter = rateLimiter(60000, 10);
+// Production-ready specialized Rate Limiters
+const authLimiter = rateLimiter("auth");
+const otpLimiter = rateLimiter("otp");
+const resetLimiter = rateLimiter("reset");
 
 router.get(
   "/check-username",
@@ -17,7 +19,7 @@ router.get(
 
 router.post(
   "/send-otp",
-  authLimiter,
+  otpLimiter,
   authController.sendOTP.bind(authController),
 );
 
@@ -41,13 +43,13 @@ router.post(
 
 router.post(
   "/forgot-password",
-  authLimiter,
+  resetLimiter,
   authController.forgotPassword.bind(authController),
 );
 
 router.post(
   "/reset-password",
-  authLimiter,
+  resetLimiter,
   authController.resetPassword.bind(authController),
 );
 
