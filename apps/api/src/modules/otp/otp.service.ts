@@ -20,6 +20,21 @@ class OTPService {
     return crypto.createHash("sha256").update(otp).digest("hex");
   }
 
+  private generateAlphanumericOTP(length = 6): string {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let result = "";
+    while (result.length < length) {
+      const byte = crypto.randomBytes(1)[0];
+      if (byte !== undefined && byte < 248) { // Eliminate modulo bias (62 * 4 = 248)
+        const char = chars[byte % 62];
+        if (char !== undefined) {
+          result += char;
+        }
+      }
+    }
+    return result;
+  }
+
   public async sendOTP(
     email: string,
     purpose: OTPPurposeType,
@@ -38,8 +53,8 @@ class OTPService {
       }
     }
 
-    // 2. Generate a secure 6-digit numeric OTP
-    const otp = crypto.randomInt(100000, 999999).toString();
+    // 2. Generate a secure 6-character alphanumeric OTP
+    const otp = this.generateAlphanumericOTP(6);
     const otpHash = this.hashOTP(otp);
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes validity
 

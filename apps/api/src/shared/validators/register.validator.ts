@@ -93,8 +93,8 @@ export const registerSchema = z
     otp: z
       .string()
       .trim()
-      .length(6, "Verification code must be exactly 6 digits.")
-      .regex(/^\d+$/, "Verification code must contain only numbers."),
+      .length(6, "Verification code must be exactly 6 characters.")
+      .regex(/^[A-Za-z0-9]+$/, "Verification code must contain only alphanumeric characters."),
   })
   .strict()
   .superRefine(({ password, confirmPassword }, ctx) => {

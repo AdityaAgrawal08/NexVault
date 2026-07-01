@@ -6,6 +6,7 @@ import ProfilePage from "@/features/auth/pages/ProfilePage";
 import ForgotPasswordPage from "@/features/auth/pages/ForgotPasswordPage";
 import ResetPasswordPage from "@/features/auth/pages/ResetPasswordPage";
 import VerifyAccountPage from "@/features/auth/pages/VerifyAccountPage";
+import VerifyOTPPage from "@/features/auth/pages/VerifyOTPPage";
 import SessionsPage from "@/features/auth/pages/SessionsPage";
 import { apiRequest, setAccessToken } from "@/shared/utils/apiClient";
 
@@ -71,6 +72,7 @@ export default function App() {
     <Routes>
       <Route path="/" element={<Navigate to="/register" replace />} />
       <Route path="/register" element={<RegisterPage />} />
+      <Route path="/verify-otp" element={<VerifyOTPPage />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/profile" element={<ProfilePage />} />
       <Route path="/sessions" element={<SessionsPage />} />

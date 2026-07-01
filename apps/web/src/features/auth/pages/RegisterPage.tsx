@@ -14,65 +14,18 @@ export default function RegisterPage() {
   const [usernameStatus, setUsernameStatus] = useState<"idle" | "checking" | "available" | "taken" | "invalid">("idle");
   const [usernameMessage, setUsernameMessage] = useState("");
 
-  // OTP State
-  const [otpSent, setOtpSent] = useState(false);
-  const [countdown, setCountdown] = useState(0);
-  const [otpError, setOtpError] = useState("");
-  const [otpSending, setOtpSending] = useState(false);
-
-  useEffect(() => {
-    if (countdown > 0) {
-      const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [countdown]);
-
-  async function handleSendOTP() {
-    const email = form.email.trim();
-    if (!email || !email.includes("@")) {
-      setErrors((prev) => ({ ...prev, email: "Please enter a valid email address first." }));
-      return;
-    }
-
-    setOtpSending(true);
-    setOtpError("");
+  async function handleSuccess(data: RegisterFormData) {
     try {
+      // Send OTP to the entered email address before proceeding to verification page
       await apiRequest("/send-otp", {
         method: "POST",
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email: data.email.trim() }),
       });
-      setOtpSent(true);
-      setCountdown(60); // 1 minute rate limit
-    } catch (err: any) {
-      setOtpError(err.message || "Failed to send verification code.");
-    } finally {
-      setOtpSending(false);
-    }
-  }
 
-  async function handleSuccess(data: RegisterFormData) {
-    const otp = (data as any).otp?.trim();
-    if (!otp || otp.length !== 6) {
-      setOtpError("Please enter the 6-digit verification code.");
-      throw new Error("Email verification code is required.");
-    }
-
-    try {
-      await apiRequest("/register", {
-        method: "POST",
-        body: JSON.stringify({ ...data, otp }),
-      });
-      navigate("/login", { state: { message: "Account created and verified successfully! Please log in." } });
+      // Navigate to separate OTP Verification page carrying the registration details
+      navigate("/verify-otp", { state: { registrationData: data } });
     } catch (err: any) {
-      if (err.errors) {
-        const formErrors: any = {};
-        for (const key of Object.keys(err.errors)) {
-          formErrors[key] = Array.isArray(err.errors[key])
-            ? err.errors[key][0]
-            : err.errors[key];
-        }
-        setErrors(formErrors);
-      }
+      // Forward error so the hook sets submitError
       throw err;
     }
   }
@@ -100,7 +53,7 @@ export default function RegisterPage() {
     }
   }
 
-  const { form, errors, setErrors, submitError, submitting, handleChange, handleSubmit } =
+  const { form, errors, submitError, submitting, handleChange, handleSubmit } =
     useRegisterForm(handleSuccess);
 
   useEffect(() => {
@@ -171,12 +124,6 @@ export default function RegisterPage() {
           </div>
         )}
 
-        {otpError && (
-          <div className="form-error" role="alert">
-            {otpError}
-          </div>
-        )}
-
         <form onSubmit={handleSubmit} noValidate>
           <div className="field">
             <label htmlFor="username">Username</label>
@@ -217,51 +164,22 @@ export default function RegisterPage() {
 
           <div className="field">
             <label htmlFor="email">Email</label>
-            <div className="integrated-row">
-              <input
-                id="email"
-                name="email"
-                type="email"
-                autoComplete="email"
-                value={form.email}
-                onChange={handleChange}
-                placeholder="you@example.com"
-                aria-describedby={errors.email ? "email-err" : undefined}
-              />
-              <button
-                type="button"
-                className="integrated-otp-btn"
-                onClick={handleSendOTP}
-                disabled={otpSending || countdown > 0}
-              >
-                {otpSending ? "Sending…" : countdown > 0 ? `Resend (${countdown}s)` : "Send OTP"}
-              </button>
-            </div>
+            <input
+              id="email"
+              name="email"
+              type="email"
+              autoComplete="email"
+              value={form.email}
+              onChange={handleChange}
+              placeholder="you@example.com"
+              aria-describedby={errors.email ? "email-err" : undefined}
+            />
             {errors.email && (
               <span className="field-error" id="email-err" role="alert">
                 {errors.email}
               </span>
             )}
           </div>
-
-          {otpSent && (
-            <div className="field">
-              <label htmlFor="otp">Email Verification OTP</label>
-              <input
-                id="otp"
-                name="otp"
-                type="text"
-                maxLength={6}
-                value={(form as any).otp || ""}
-                onChange={handleChange}
-                placeholder="Enter 6-digit verification code"
-                style={{ textAlign: "center", letterSpacing: "4px", fontSize: "16px", fontWeight: "600" }}
-              />
-              <span style={{ fontSize: "11px", color: "var(--color-muted)", marginTop: "4px", display: "block" }}>
-                OTP is valid for 15 minutes. Check terminal logs for code.
-              </span>
-            </div>
-          )}
 
           <div className="field">
             <label htmlFor="phoneNumber">Phone number</label>
