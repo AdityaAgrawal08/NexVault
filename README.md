@@ -1,70 +1,50 @@
 # Advanced Production-Grade Authentication & Security System
 
-A high-performance, robust, and secure authentication system built as a monorepo containing a React (Vite + TypeScript) frontend and an Express (TypeScript) API. Designed to scale to millions of requests with sub-millisecond latencies using a polyglot persistence architecture.
+A high-performance, robust, and secure authentication system built as a monorepo containing a React (Vite + TypeScript) frontend and an Express (TypeScript) API. Designed to scale to millions of requests with sub-millisecond latencies using a polyglot persistence architecture and robust rate-limiting controls.
 
 ---
 
 ## Key Features & Architecture
 
-### 1. Pluggable Production-Grade Databases & Scaling
+### 1. High-Throughput Centralized Rate Limiting (10k RPS Target)
+- **Redis Lua Script Token Bucket**: Replaced resource-heavy sliding window logs (using Redis sorted sets) with a highly optimized Token Bucket algorithm executed via an atomic Redis Lua script in exactly **one round-trip**. Memory and CPU usage are scaled down to \(O(1)\).
+- **Specialized Endpoint Policies**: Rate limiting is tailored to endpoint sensitivity instead of using a single global limit:
+  - `auth`: Burst capacity 15 per minute (Login, Register, Recover, OAuth).
+  - `otp`: Burst capacity 3 per minute (OTP generation/dispatch).
+  - `reset`: Burst capacity 5 per minute (Password reset requests).
+  - `api`: Burst capacity 100 per minute (Standard authenticated API requests).
+  - `global`: Burst capacity 200 per minute (All generic page loads and static assets).
+- **Fallback Stores**: Falls back automatically to an in-memory Token Bucket store in the absence of Redis.
+
+### 2. Backpressure & Resource Isolation
+- **CPU Hashing Concurrency Queue**: Argon2id is computationally intensive. Under concurrent request spikes, standard parallel hashing saturates CPU cores and freezes the event loop. We isolate Argon2id hashing and verification inside a concurrency-limiting queue capped at `os.cpus().length` logical cores.
+- **Graceful Performance Degradation**: If the hashing queue size exceeds 1,000 pending tasks, the backend rejects incoming logins with `429 AUTH_SERVER_BUSY` to prevent CPU exhaustion.
+- **Resilient Geolocation Timeout**: Public IP location requests (used in travel speed checks) are wrapped in an `AbortController` with a strict **500ms timeout**, ensuring public API delays never block connection threads.
+
+### 3. Database Protection & Caching
 - **PostgreSQL Read/Write Splitting**: Configured with separate connection pools (`writePool` and `readPool`). Automatically routes all read queries (`SELECT`) to read replicas while directing all mutations (`INSERT`, `UPDATE`, `DELETE`) to the primary database writer.
-- **Redis Integration**:
-  - The system automatically detects `REDIS_URL` in your `.env` file.
-  - When active, the system offloads high-write, transient, and caching operations from PostgreSQL to Redis.
-  - If `REDIS_URL` is omitted, the system gracefully falls back to local in-memory and PostgreSQL stores, ensuring a **zero-setup** developer experience.
-- **Asynchronous Email Delivery Queue with Dead Letter Queue (DLQ)**:
-  - Processes outbound emails (OTPs, alerts, welcomes) asynchronously using Redis Lists (`LPUSH`/`RPOP`) or Postgres polling (`SKIP LOCKED`).
-  - If an email job fails after maximum retries, it is automatically moved to a **Dead Letter Queue** (`email:dlq` in Redis or `DLQ` status in Postgres) for inspection and troubleshooting without losing data.
-- **Write-Through Session Cache**: Caches active sessions in Redis, reducing PostgreSQL read pressure and validating tokens in sub-milliseconds.
-- **Distributed Locking (Redlock)**: Implements distributed locks in Redis (falling back to an in-memory lock manager) to prevent race conditions during highly concurrent operations, such as simultaneous registrations of the same username or concurrent verification attempts of the same OTP.
+- **Negative Caching of Revoked Tokens**: To prevent Postgres from being hammered by repetitive requests containing invalid, expired, or revoked sessions, the backend caches a special `"revoked"` placeholder in Redis for 5 minutes. Subsequent compromised requests fail-fast at the cache level without touching the DB.
 
-### 2. Advanced Security Hardening
-- **Impossible Travel / Geo-Velocity Checks**: Resolves IP addresses to geographical coordinates (via `ip-api.com` with local caching and loopback simulations). Calculates travel distance (Haversine formula) and speed between consecutive requests. If speed exceeds **800 km/h** (commercial jet speed), the session is instantly revoked and the request is blocked.
-- **IP/Subnet Blacklisting**: Integrates a global IP blacklist check against a Redis set (`blacklist:ips`) on every request, blocking flagged IPs with `403 Forbidden`.
-- **Leaked Credential Detection**: During registration, password change, and password reset, the password is checked against the **HaveIBeenPwned API** using the **k-Anonymity model** (only the first 5 characters of the SHA-1 hash are sent), preventing users from selecting compromised passwords.
-- **Access Token Blocklisting**: Upon logout or password change, the active access token's signature is blocklisted in Redis with a TTL matching its remaining expiration, instantly revoking its validity.
-- **Refresh Token Rotation (RTR) with SIEM Alerting**: Prevents token replay attacks by rotating refresh tokens on every refresh. If token reuse is detected, all active sessions are instantly revoked, a critical security audit event is logged, and a security alert email is sent to the user.
-- **Argon2id Password Hashing**: Explicitly tuned using the RFC 9106 recommended profile (`memoryCost: 64MB`, `timeCost: 3`, `parallelism: 4`) to maximize offline brute-force difficulty.
-- **Device Fingerprint Hijacking Protection**: The client sends a persistent device signature via the `X-Device-Fingerprint` header. The backend hashes and stores it alongside the session. A fingerprint mismatch during token refresh triggers immediate session revocation across all devices.
-- **GDPR & CCPA Privacy Compliance**: Recursively masks sensitive fields (like emails and phone numbers) in `audit_logs` metadata before saving to the database.
+### 4. Advanced Security Hardening & Session Hijacking Defense
+- **Request-Level Fingerprint Verification**: In [auth.middleware.ts](file:///apps/api/src/core/security/auth.middleware.ts), every single authenticated request calculates the client's device fingerprint hash (from User-Agent, IP address, and client-provided headers) and compares it with the stored session signature.
+- **Session Hijacking Auto-Lockout**: If a signature mismatch is detected (e.g. an attacker copies the `accessToken` and attempts to use it on another browser/network), the server **instantly revokes the session**, logs a `SESSION_HIJACK_DETECTED` security audit trace, and denies access with `401 AUTH_SESSION_HIJACK_DETECTED`.
+- **Impossible Travel / Geo-Velocity Checks**: Calculates travel speed between consecutive requests using coordinates. If speed exceeds **800 km/h** (commercial jet speed), the session is instantly revoked and the request is blocked.
+- **IP/Subnet Blacklisting**: Intercepts requests against a global IP blacklist (`blacklist:ips` in Redis) to block malicious traffic at the edge.
+- **Refresh Token Rotation (RTR)**: Rotates refresh tokens on every refresh. If reuse of an old token is detected, it triggers immediate revocation of all sessions and fires security alert emails to the user.
 
-### 3. Secure Account Deletion with Recovery Window
-- **Two-Step Deletion Flow**:
-  - `POST /profile/delete/request`: Triggers email OTP verification for deletion.
-  - `POST /profile/delete/confirm`: Verifies the OTP, schedules permanent deletion (1 day retention by default, configurable via `ACCOUNT_DELETION_RETENTION_HOURS` env variable), and invalidates all active sessions immediately.
-- **Account Recovery**:
-  - If a user attempts to log in during the grace period, normal login is blocked and a recovery OTP is sent to their registered email.
-  - `POST /auth/recover`: Verifies the recovery OTP, restores the account (and optionally resets the password), and logs the user in.
-- **Background Deletion Worker**:
-  - Runs in the background, permanently deleting expired accounts and all associated data (tokens, logs, resets) inside a database transaction, and sending a final confirmation email.
+### 5. Multi-Session Concurrent Login Control
+- **Interactive Conflict UI**: If a user attempts to log in while an active session exists elsewhere, the frontend displays an interactive conflict panel allowing them to `[Cancel]` or `[Log Out Other Devices]`.
+- **Forced Logout Credential Re-entry**: Clicking **Log Out Other Devices** fires a request that terminates all other sessions on the backend and returns the code `AUTH_CONCURRENT_SESSIONS_REVOKED`. The frontend redirects the user back to the login card with a success message, requiring they re-enter their email and password to log in. This prevents race conditions and immediate token generation.
 
-### 4. Single Active Session Enforcement
-- **Login Verification**:
-  - When a user logs in, the backend checks for existing active sessions.
-  - If any active sessions exist and `force` is not true, it blocks the login and returns `AUTH_SESSION_ALREADY_ACTIVE` (`409 Conflict`).
-  - If the user chooses **Log Out Everywhere and Continue** (passing `force: true` in the request body), the backend revokes all active sessions before issuing new tokens.
-- **Authoritative Session Check**:
-  - The auth middleware calls `sessionStore.isSessionActive(payload.tokenId)` on every request. If the session has been revoked, the request is rejected with `AUTH_SESSION_REVOKED` (`401 Unauthorized`), ensuring instant enforcement.
-
-### 5. Centralized Policy Engine (ABAC & RBAC)
-- Ownership checks and role-based permissions are decoupled from controller business logic and handled by a centralized `policyEngine` ([policy.ts](file:///home/aditya/dev/website/apps/api/src/core/security/policy.ts)).
-- Thin, maintainable controllers that query the policy engine before serving resources.
-
-### 6. Interactive Re-authentication Flow
-- Guarding highly sensitive actions:
-  - Changing password
-  - Changing email
-  - Deleting account
-  - Revoking other active sessions
-- The frontend interceptor automatically opens the `ReauthModal` prompting the user to confirm their identity using their password or an email-based OTP. Once verified, a short-lived (5-minute) `reauthToken` (JWT) is returned and passed in the `X-Reauth-Token` header.
-
-### 7. Observability & Monitoring
-- **OpenTelemetry & APM**: Node.js entrypoint is instrumented with the OpenTelemetry SDK (`NodeSDK`) and auto-instrumentations to trace Express requests, PG database queries, Redis commands, and external API requests.
-- **Prometheus Metrics**: Exposes a `/metrics` endpoint collecting:
-  - `active_sessions_count`: Current active sessions.
-  - `rate_limit_triggers_total`: Total rate-limiting triggers.
-  - `email_queue_size`: Current email queue size.
-  - `argon2id_hashing_latency_seconds`: Average Argon2id hashing latency.
+### 6. Observability & Monitoring
+- **OpenTelemetry & APM**: Auto-instrumented to trace Express requests, PG database queries, and Redis commands.
+- **Prometheus Metrics**: Exposes a real-time `/metrics` endpoint collecting:
+  - `requests_total` & `requests_errors_total` (counters)
+  - `request_latency_seconds_avg`, `_p95`, `_p99` (rolling gauges for API response speed)
+  - `db_query_latency_seconds_avg` (gauge monitoring Postgres)
+  - `hashing_queue_depth` (gauge monitoring hashing backpressure)
+  - `cache_hit_ratio` (gauge monitoring Redis hit/miss rates)
+  - `active_sessions_count`, `rate_limit_triggers_total`, and `email_queue_size`.
 
 ---
 
@@ -74,40 +54,59 @@ A high-performance, robust, and secure authentication system built as a monorepo
 - [Node.js](https://nodejs.org/) (v18+)
 - [pnpm](https://pnpm.io/)
 - PostgreSQL (Local or hosted, e.g. Neon)
-- Redis (Local or hosted, e.g. Upstash or local docker/system service)
+- Redis (Local or hosted, e.g. Upstash)
 
 ### 1. Environment Variables
 Create a `.env` file in `apps/api/`:
 ```env
+NODE_ENV=production
 PORT=3000
 DATABASE_URL=postgresql://user:pass@host/db
-DATABASE_READ_URL=postgresql://user:pass@read-host/db # Optional: falls back to DATABASE_URL
-JWT_SECRET=super-secure-dev-jwt-secret-key-123456
+DATABASE_READ_URL=postgresql://user:pass@read-host/db
+JWT_SECRET=super-secure-production-jwt-secret-key-123456
 REDIS_URL=redis://localhost:6379
-ACCOUNT_DELETION_RETENTION_HOURS=24
+EMAIL_PROVIDER=resend
+RESEND_API_KEY=re_xxxxxx
+EMAIL_FROM=no-reply@update.shooterdelta.tech
 ```
 
 Create a `.env` file in `apps/web/`:
 ```env
-VITE_API_URL=http://localhost:3000
+VITE_API_URL=/api
 ```
 
 ### 2. Installation & Run
 ```bash
-# Install dependencies
-pnpm install
+# Install dependencies (forces devDependencies to install even if NODE_ENV=production is set)
+pnpm install --production=false
 
-# Build the project
+# Build the project (compiles backend TypeScript and builds React frontend statically)
 pnpm build
 
 # Start the development server (Frontend on :3001, API on :3000)
 pnpm dev
 ```
 
-On startup, you will see the following confirmation in your API terminal logs:
-```
-[Redis] Connected successfully.
-[Telemetry] OpenTelemetry initialized successfully.
-[DeletionWorker] Started background account deletion worker.
-```
-This confirms that all pluggable stores (Rate Limiting, OTP, Session, and Email Queue) are successfully running on Redis, and telemetry and background workers are active.
+---
+
+## Production Deployment (Render + Cloudflare)
+
+Since the Express backend serves the React frontend statically in production, you have a **Unified Same-Origin Deployment** (you only run the Express app on port `3000` in the cloud).
+
+### 1. Setup on Render
+1. Create a new **Web Service** on [Render](https://render.com) pointing to your GitHub repository.
+2. Configure settings:
+   - **Build Command**: `pnpm install --production=false && pnpm build`
+   - **Start Command**: `node apps/api/dist/app/server.js`
+   - **Port**: `3000`
+3. Add your production environment variables (from your `.env` file) under the **Environment** tab.
+4. Render will deploy your service and give you a target URL like `your-app.onrender.com`.
+
+### 2. Point Custom Domain in Cloudflare
+1. Go to your **Cloudflare Dashboard > DNS > Records**.
+2. Add a new record:
+   - **Type**: `CNAME`
+   - **Name**: `NexVault` (to map `NexVault.shooterdelta.tech`)
+   - **Target**: `your-app.onrender.com`
+   - **Proxy Status**: **DNS Only** (grey cloud). *Since Render manages SSL, DNS-Only prevents double-proxy routing conflicts (Cloudflare Error 1000).*
+3. Add `NexVault.shooterdelta.tech` under the **Custom Domains** section in your Render Web Service settings page to verify ownership and activate the SSL certificate.
