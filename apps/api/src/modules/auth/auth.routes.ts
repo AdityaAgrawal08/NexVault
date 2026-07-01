@@ -137,6 +137,14 @@ router.post(
 
 // --- Active Session Management ---
 router.get(
+  "/session-status",
+  authMiddleware,
+  (req, res) => {
+    res.status(200).json({ status: "active" });
+  }
+);
+
+router.get(
   "/sessions",
   authMiddleware,
   authController.getSessions.bind(authController),

@@ -288,7 +288,7 @@ class AuthService {
         userAgent,
       });
 
-      await sessionStore.invalidateAllUserSessions(user.id);
+      await sessionStore.invalidateAllUserSessions(user.id, "CONCURRENT_LOGIN");
 
       await auditService.log({
         userId: user.id,
@@ -671,7 +671,7 @@ class AuthService {
     }
 
     if (activeSessions.length > 0 && force) {
-      await sessionStore.invalidateAllUserSessions(user.id);
+      await sessionStore.invalidateAllUserSessions(user.id, "CONCURRENT_LOGIN");
     }
 
     return this.generateUserSession(user, ipAddress, userAgent, deviceFingerprint);
@@ -697,7 +697,16 @@ class AuthService {
 
     const tokenRecord = await authRepository.findRefreshTokenById(payload.tokenId);
     
-    // 1. Detect Refresh Token Reuse (RTR Violation / Theft)
+    // 1. Detect if the token was explicitly revoked due to concurrent login
+    if (tokenRecord && tokenRecord.isRevoked && tokenRecord.revocationReason === "CONCURRENT_LOGIN") {
+      throw new AppError({
+        message: "Your session has ended because your account was signed in from another device.",
+        statusCode: 401,
+        code: "AUTH_SESSION_REVOKED_CONCURRENT",
+      });
+    }
+
+    // 2. Detect Refresh Token Reuse (RTR Violation / Theft)
     if (tokenRecord && (tokenRecord.isRevoked || tokenRecord.replacedBy)) {
       const user = await authRepository.findUserById(tokenRecord.userId);
       

@@ -48,6 +48,24 @@ export async function apiRequest(url: string, options: RequestOptions = {}): Pro
     credentials: "include", // Ensure cookies are sent and received
   });
 
+  // Extract error code if response was not ok
+  let errorData: any = null;
+  if (!response.ok) {
+    try {
+      const responseClone = response.clone();
+      errorData = await responseClone.json();
+    } catch (e) {
+      // Ignore JSON parsing errors
+    }
+  }
+
+  // Handle concurrent session revocation immediately
+  if (errorData && errorData.code === "AUTH_SESSION_REVOKED_CONCURRENT") {
+    clearSession();
+    window.location.href = "/login?reason=concurrent";
+    throw new Error(errorData.message || "Your session has ended because your account was signed in from another device.");
+  }
+
   // Handle 401 Unauthorized (potential token expiration)
   if (response.status === 401 && !options.skipAuth && !fullUrl.endsWith("/refresh")) {
     try {
@@ -80,9 +98,19 @@ export async function apiRequest(url: string, options: RequestOptions = {}): Pro
         }
         return retryResult;
       } else {
+        let refreshErrorData: any = null;
+        try {
+          const refreshClone = refreshResponse.clone();
+          refreshErrorData = await refreshClone.json();
+        } catch (e) {}
+
         clearSession();
-        window.location.href = "/login";
-        throw new Error("Session expired. Please log in again.");
+        if (refreshErrorData && refreshErrorData.code === "AUTH_SESSION_REVOKED_CONCURRENT") {
+          window.location.href = "/login?reason=concurrent";
+        } else {
+          window.location.href = "/login";
+        }
+        throw new Error(refreshErrorData?.message || "Session expired. Please log in again.");
       }
     } catch (err) {
       clearSession();

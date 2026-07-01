@@ -12,7 +12,7 @@ export interface SessionStore {
   ): Promise<void>;
   isSessionActive(tokenId: string): Promise<boolean>;
   invalidateSession(tokenId: string): Promise<void>;
-  invalidateAllUserSessions(userId: string): Promise<void>;
+  invalidateAllUserSessions(userId: string, reason?: string): Promise<void>;
   invalidateOtherSessions(userId: string, currentTokenId: string): Promise<void>;
 }
 
@@ -104,9 +104,9 @@ class PluggableSessionStore implements SessionStore {
     }
   }
 
-  public async invalidateAllUserSessions(userId: string): Promise<void> {
+  public async invalidateAllUserSessions(userId: string, reason?: string): Promise<void> {
     // 1. Revoke all in Postgres
-    await authRepository.revokeAllUserRefreshTokens(userId);
+    await authRepository.revokeAllUserRefreshTokens(userId, reason);
 
     // 2. Remove all from Redis
     if (redis) {

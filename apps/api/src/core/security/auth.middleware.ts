@@ -5,6 +5,7 @@ import { tokenBlocklistStore } from "./blocklist.store";
 import { geoVelocityService } from "./geo.service";
 import { sessionStore } from "../../modules/auth/session.store";
 import { auditService } from "../../modules/audit/audit.service";
+import { authRepository } from "../../modules/auth/auth.repository";
 
 // Extend Request type to include user payload
 export interface AuthenticatedRequest extends Request {
@@ -48,6 +49,16 @@ export async function authMiddleware(
     // 2. Validate session is still active in sessionStore
     const isSessionActive = await sessionStore.isSessionActive(payload.tokenId);
     if (!isSessionActive) {
+      // Check the reason for revocation from the database
+      const tokenRecord = await authRepository.findRefreshTokenById(payload.tokenId);
+      if (tokenRecord && tokenRecord.revocationReason === "CONCURRENT_LOGIN") {
+        return next(new AppError({
+          message: "Your session has ended because your account was signed in from another device.",
+          statusCode: 401,
+          code: "AUTH_SESSION_REVOKED_CONCURRENT",
+        }));
+      }
+
       return next(new AppError({
         message: "Your session has been revoked or is no longer active. Please log in again.",
         statusCode: 401,

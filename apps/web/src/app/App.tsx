@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import RegisterPage from "@/features/auth/pages/RegisterPage";
 import LoginPage from "@/features/auth/pages/LoginPage";
 import ProfilePage from "@/features/auth/pages/ProfilePage";
@@ -11,6 +11,7 @@ import { apiRequest, setAccessToken } from "@/shared/utils/apiClient";
 
 export default function App() {
   const [loading, setLoading] = useState(true);
+  const location = useLocation();
 
   useEffect(() => {
     async function restoreSession() {
@@ -35,6 +36,26 @@ export default function App() {
 
     restoreSession();
   }, []);
+
+  // Verify session status on route transitions and periodically every 10 seconds
+  useEffect(() => {
+    if (loading) return;
+
+    async function checkSession() {
+      if (localStorage.getItem("user")) {
+        try {
+          await apiRequest("/session-status");
+        } catch (err) {
+          // If the request fails, apiClient interceptor will handle clearing session and redirecting.
+        }
+      }
+    }
+
+    checkSession();
+
+    const interval = setInterval(checkSession, 10000);
+    return () => clearInterval(interval);
+  }, [location.pathname, loading]);
 
   if (loading) {
     return (

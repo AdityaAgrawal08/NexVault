@@ -1,5 +1,5 @@
 import { useState, FormEvent } from "react";
-import { Link, useNavigate, useLocation } from "react-router-dom";
+import { Link, useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { useLoginForm } from "../hooks/useLoginForm";
 import { usePasswordVisibility } from "@/shared/hooks/usePasswordVisibility";
 import type { LoginFormData } from "@/shared/types/auth.types";
@@ -10,6 +10,14 @@ export default function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const successMessage = location.state?.message;
+  const [searchParams] = useSearchParams();
+  const reason = searchParams.get("reason");
+
+  // Concurrent Session Handling State
+  const [sessionConflict, setSessionConflict] = useState(false);
+  const [pendingFormData, setPendingFormData] = useState<LoginFormData | null>(null);
+  const [forceLoggingIn, setForceLoggingIn] = useState(false);
+  const [forceLoginError, setForceLoginError] = useState<string | null>(null);
 
   // 2FA Verification State
   const [mfaRequired, setMfaRequired] = useState(false);
@@ -24,6 +32,9 @@ export default function LoginPage() {
 
   async function handleSuccess(data: LoginFormData) {
     try {
+      setSessionConflict(false);
+      setPendingFormData(null);
+
       const result = await apiRequest("/login", {
         method: "POST",
         body: JSON.stringify(data),
@@ -46,6 +57,12 @@ export default function LoginPage() {
       localStorage.setItem("user", JSON.stringify(result.data.user));
       navigate("/profile");
     } catch (err: any) {
+      if (err.code === "AUTH_SESSION_ALREADY_ACTIVE" || err.statusCode === 409) {
+        setSessionConflict(true);
+        setPendingFormData(data);
+        return;
+      }
+
       if (err.errors) {
         const formErrors: any = {};
         for (const key of Object.keys(err.errors)) {
@@ -56,6 +73,48 @@ export default function LoginPage() {
         setErrors(formErrors);
       }
       throw err;
+    }
+  }
+
+  async function handleForceLogin() {
+    if (!pendingFormData) return;
+    setForceLoggingIn(true);
+    setForceLoginError(null);
+    try {
+      const result = await apiRequest("/login", {
+        method: "POST",
+        body: JSON.stringify({
+          ...pendingFormData,
+          force: true,
+        }),
+      });
+
+      if (result.data.mfaRequired) {
+        setMfaRequired(true);
+        setMfaToken(result.data.mfaToken);
+        setSessionConflict(false);
+        setPendingFormData(null);
+        return;
+      }
+
+      if (result.data.mfaSetupRequired) {
+        setMfaSetupRequired(true);
+        setMfaToken(result.data.mfaToken);
+        setMfaSetupData(result.data.mfaSetup);
+        setSessionConflict(false);
+        setPendingFormData(null);
+        return;
+      }
+
+      setAccessToken(result.data.accessToken);
+      localStorage.setItem("user", JSON.stringify(result.data.user));
+      setSessionConflict(false);
+      setPendingFormData(null);
+      navigate("/profile");
+    } catch (err: any) {
+      setForceLoginError(err.message || "Failed to log out other devices and log in.");
+    } finally {
+      setForceLoggingIn(false);
     }
   }
 
@@ -292,6 +351,66 @@ export default function LoginPage() {
     );
   }
 
+  // Render Session Conflict View
+  if (sessionConflict) {
+    return (
+      <div className="page-center">
+        <div className="card">
+          <div className="brand">
+            <span className="brand-logo">⬡</span>
+            <span className="brand-name">NexVault</span>
+          </div>
+
+          <h1 className="card-title">Active Session Exists</h1>
+          
+          <p style={{ fontSize: "14px", color: "var(--color-muted)", textAlign: "center", marginBottom: "1.5rem", lineHeight: "1.5" }}>
+            An active session already exists on another device.
+          </p>
+
+          {forceLoginError && (
+            <div className="form-error" role="alert" style={{ marginBottom: "1rem" }}>
+              {forceLoginError}
+            </div>
+          )}
+
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", width: "100%" }}>
+            <button 
+              type="button" 
+              className="submit-btn" 
+              onClick={handleForceLogin}
+              disabled={forceLoggingIn}
+              style={{ margin: 0 }}
+            >
+              {forceLoggingIn ? "Logging out other devices…" : "Log Out Other Devices"}
+            </button>
+            <button 
+              type="button" 
+              onClick={() => {
+                setSessionConflict(false);
+                setPendingFormData(null);
+                setForceLoginError(null);
+              }}
+              style={{
+                background: "var(--color-bg-alt, #1f2937)",
+                border: "1px solid var(--color-border, #374151)",
+                color: "var(--color-text, #f3f4f6)",
+                padding: "0.75rem 1rem",
+                borderRadius: "var(--radius)",
+                fontSize: "14px",
+                fontWeight: 500,
+                cursor: "pointer",
+                width: "100%"
+              }}
+              disabled={forceLoggingIn}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="page-center">
       <div className="card">
@@ -301,6 +420,21 @@ export default function LoginPage() {
         </div>
 
         <h1 className="card-title">Log in</h1>
+
+        {reason === "concurrent" && (
+          <div className="form-error" role="alert" style={{
+            backgroundColor: "rgba(239, 68, 68, 0.1)",
+            border: "1px solid var(--color-error)",
+            color: "var(--color-error)",
+            padding: "0.75rem 1rem",
+            borderRadius: "var(--radius)",
+            fontSize: "14px",
+            marginBottom: "1.5rem",
+            textAlign: "center"
+          }}>
+            Your session has ended because your account was signed in from another device.
+          </div>
+        )}
 
         {successMessage && (
           <div className="form-success" role="alert" style={{

@@ -25,6 +25,7 @@ export interface RefreshTokenRecord {
   ipAddress: string | null;
   userAgent: string | null;
   deviceFingerprint: string | null;
+  revocationReason: string | null;
 }
 
 export class AuthRepository {
@@ -370,7 +371,8 @@ export class AuthRepository {
           replaced_by AS "replacedBy",
           ip_address AS "ipAddress",
           user_agent AS "userAgent",
-          device_fingerprint AS "deviceFingerprint"
+          device_fingerprint AS "deviceFingerprint",
+          revocation_reason AS "revocationReason"
         FROM refresh_tokens
         WHERE token_hash = $1
         LIMIT 1
@@ -396,7 +398,8 @@ export class AuthRepository {
           replaced_by AS "replacedBy",
           ip_address AS "ipAddress",
           user_agent AS "userAgent",
-          device_fingerprint AS "deviceFingerprint"
+          device_fingerprint AS "deviceFingerprint",
+          revocation_reason AS "revocationReason"
         FROM refresh_tokens
         WHERE id = $1
         LIMIT 1
@@ -407,25 +410,25 @@ export class AuthRepository {
     return rows[0] || null;
   }
 
-  public async revokeRefreshToken(id: string): Promise<void> {
+  public async revokeRefreshToken(id: string, reason?: string): Promise<void> {
     await db.query(
       `
         UPDATE refresh_tokens
-        SET is_revoked = TRUE
+        SET is_revoked = TRUE, revocation_reason = $2
         WHERE id = $1
       `,
-      [id],
+      [id, reason || null],
     );
   }
 
-  public async revokeAllUserRefreshTokens(userId: string): Promise<void> {
+  public async revokeAllUserRefreshTokens(userId: string, reason?: string): Promise<void> {
     await db.query(
       `
         UPDATE refresh_tokens
-        SET is_revoked = TRUE
+        SET is_revoked = TRUE, revocation_reason = $2
         WHERE user_id = $1
       `,
-      [userId],
+      [userId, reason || null],
     );
   }
 

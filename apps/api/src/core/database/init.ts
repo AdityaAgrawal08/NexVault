@@ -31,7 +31,8 @@ export async function initializeDatabase() {
       ALTER TABLE refresh_tokens
       ADD COLUMN IF NOT EXISTS ip_address VARCHAR(45) DEFAULT NULL,
       ADD COLUMN IF NOT EXISTS user_agent TEXT DEFAULT NULL,
-      ADD COLUMN IF NOT EXISTS device_fingerprint VARCHAR(64) DEFAULT NULL;
+      ADD COLUMN IF NOT EXISTS device_fingerprint VARCHAR(64) DEFAULT NULL,
+      ADD COLUMN IF NOT EXISTS revocation_reason VARCHAR(50) DEFAULT NULL;
     `);
 
     // 4. Create or recreate the otps table to support hashing, purpose, and attempts
