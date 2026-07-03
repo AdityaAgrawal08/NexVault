@@ -33,8 +33,8 @@ app.use(express.json());
 // 1. Global IP Blacklist Middleware
 app.use(ipBlacklistMiddleware);
 
-// 2. Global Rate Limiter: 200 requests per minute per IP
-app.use(rateLimiter(60000, 200));
+// 2. Global Rate Limiter: 10,000 requests per minute per IP for trial/load testing
+app.use(rateLimiter("global"));
 
 // 3. Prometheus Metrics Endpoint
 app.get("/metrics", async (req, res) => {
