@@ -93,16 +93,16 @@ export interface RateLimitPolicy {
 
 export const POLICIES: Record<string, RateLimitPolicy> = {
   global: {
-    capacity: 200,
-    refillRate: 200 / 60000,
+    capacity: 10000,
+    refillRate: 10000 / 60000,
     windowMs: 60000,
-    maxRequests: 200,
+    maxRequests: 10000,
   },
   auth: {
-    capacity: 15,
-    refillRate: 15 / 60000,
-    windowMs: 60000,
-    maxRequests: 15,
+    capacity: 10,
+    refillRate: 10 / 120000,
+    windowMs: 120000,
+    maxRequests: 10,
   },
   otp: {
     capacity: 3,
@@ -151,8 +151,17 @@ export function rateLimiter(param1: number | keyof typeof POLICIES, param2?: num
     const ip = req.ip || req.socket.remoteAddress || "unknown";
     const now = Date.now();
 
+    // Determine target rate-limit key identifier
+    let keyIdentifier = ip;
+    if (policyKey === "auth" && req.body && (req.body.identifier || req.body.username || req.body.email)) {
+      const ident = req.body.identifier || req.body.username || req.body.email;
+      if (typeof ident === "string" && ident.trim()) {
+        keyIdentifier = `user:${ident.trim().toLowerCase()}`;
+      }
+    }
+
     try {
-      const result = await rateLimitStore.checkLimit(ip, policy.windowMs, policy.maxRequests, policyKey);
+      const result = await rateLimitStore.checkLimit(keyIdentifier, policy.windowMs, policy.maxRequests, policyKey);
       const retryAfterSeconds = Math.max(1, Math.ceil((result.resetTime - now) / 1000));
 
       res.setHeader("X-RateLimit-Limit", policy.maxRequests);
@@ -162,9 +171,12 @@ export function rateLimiter(param1: number | keyof typeof POLICIES, param2?: num
       if (!result.allowed) {
         metricsService.incrementRateLimitTriggers();
         res.setHeader("Retry-After", retryAfterSeconds);
+        const errMsg = policyKey === "auth"
+          ? `Too many login attempts. Please wait for 2 minutes.`
+          : `Too many requests. Please try again in ${retryAfterSeconds} seconds.`;
         return next(
           new AppError({
-            message: `Too many requests. Please try again in ${retryAfterSeconds} seconds.`,
+            message: errMsg,
             statusCode: 429,
             code: "TOO_MANY_REQUESTS",
           })
