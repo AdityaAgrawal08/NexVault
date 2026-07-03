@@ -36,7 +36,21 @@ function verifyCSRF(req: Request) {
   const target = origin || referer;
   if (target) {
     const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(target);
-    if (!isLocalhost) {
+    let isAllowedDomain = false;
+    try {
+      const hostname = new URL(target).hostname.toLowerCase();
+      // Allow localhost, the actual request host, or shooterdelta.tech subdomains
+      const hostHeader = req.headers.host;
+      const requestHost = hostHeader?.split(":")[0]?.toLowerCase() || "";
+      isAllowedDomain = 
+        hostname === requestHost || 
+        hostname.endsWith(".shooterdelta.tech") || 
+        hostname === "shooterdelta.tech";
+    } catch (e) {
+      // Ignore URL parse error
+    }
+
+    if (!isLocalhost && !isAllowedDomain) {
       throw new AppError({
         message: "Action blocked by CSRF protection policy.",
         statusCode: 403,

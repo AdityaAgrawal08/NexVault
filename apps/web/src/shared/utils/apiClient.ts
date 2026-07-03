@@ -67,7 +67,21 @@ export async function apiRequest(url: string, options: RequestOptions = {}): Pro
   }
 
   // Handle 401 Unauthorized (potential token expiration)
-  if (response.status === 401 && !options.skipAuth && !fullUrl.endsWith("/refresh")) {
+  const isPublicOrReauth =
+    fullUrl.endsWith("/login") ||
+    fullUrl.endsWith("/register") ||
+    fullUrl.endsWith("/refresh") ||
+    fullUrl.includes("/reauth/") ||
+    fullUrl.endsWith("/send-otp") ||
+    fullUrl.endsWith("/verify-otp") ||
+    fullUrl.endsWith("/verify-email") ||
+    fullUrl.endsWith("/verify-2fa") ||
+    fullUrl.endsWith("/verify-setup-2fa") ||
+    fullUrl.endsWith("/forgot-password") ||
+    fullUrl.endsWith("/reset-password") ||
+    fullUrl.endsWith("/oauth/login");
+
+  if (response.status === 401 && !options.skipAuth && !isPublicOrReauth) {
     try {
       const refreshHeaders = new Headers();
       refreshHeaders.set("X-Device-Fingerprint", getDeviceFingerprint());

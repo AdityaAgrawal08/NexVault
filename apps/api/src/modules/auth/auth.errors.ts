@@ -18,7 +18,7 @@ export class UserAlreadyExistsError extends AppError {
 export class UserNotFoundError extends AppError {
   constructor() {
     super({
-      message: "User not found.",
+      message: "No account exists with these credentials.",
       statusCode: 404,
       code: "AUTH_USER_NOT_FOUND",
     });
@@ -28,12 +28,12 @@ export class UserNotFoundError extends AppError {
 export class InvalidCredentialsError extends AppError {
   constructor() {
     super({
-      message: "Invalid email or password.",
+      message: "Incorrect username/email or password.",
       statusCode: 401,
       code: "AUTH_INVALID_CREDENTIALS",
       errors: {
         identifier: [
-          "Invalid email or password.",
+          "Incorrect username/email or password.",
         ],
       },
     });
