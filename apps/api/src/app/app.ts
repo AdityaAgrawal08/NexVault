@@ -7,8 +7,12 @@ import { errorMiddleware } from "../shared/middleware/error.middleware";
 import { rateLimiter } from "../shared/middleware/rate-limiter.middleware";
 import { ipBlacklistMiddleware } from "../shared/middleware/ip-blacklist.middleware";
 import { metricsService } from "../core/monitoring/metrics.service";
+import { overloadProtectionMiddleware } from "../shared/middleware/overload-protection.middleware";
 
 export const app = express();
+
+// Overload Protection & Concurrent Request Limiter
+app.use(overloadProtectionMiddleware);
 
 // Latency & Metrics Tracking Middleware
 app.use((req, res, next) => {
@@ -41,6 +45,14 @@ app.get("/metrics", async (req, res) => {
   res.setHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
   const metrics = await metricsService.getMetricsText();
   res.end(metrics);
+});
+
+// Health Check Endpoints
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "UP", timestamp: new Date().toISOString() });
+});
+app.get("/api/health", (req, res) => {
+  res.status(200).json({ status: "UP", timestamp: new Date().toISOString() });
 });
 
 app.use("/api", routes);

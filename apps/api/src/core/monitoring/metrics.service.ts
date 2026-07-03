@@ -20,6 +20,22 @@ class MetricsService {
   // Provider callback for Hashing Queue Depth (prevents circular dependency)
   private queueDepthProvider: (() => number) | null = null;
 
+  // Overload and Concurrency Metrics
+  private concurrentRequests = 0;
+  private peakConcurrentRequests = 0;
+  private overloadRejections = 0;
+
+  public setConcurrentRequests(count: number) {
+    this.concurrentRequests = count;
+    if (count > this.peakConcurrentRequests) {
+      this.peakConcurrentRequests = count;
+    }
+  }
+
+  public incrementOverloadRejections() {
+    this.overloadRejections += 1;
+  }
+
   public registerQueueDepthProvider(provider: () => number) {
     this.queueDepthProvider = provider;
   }
@@ -171,7 +187,19 @@ class MetricsService {
       "",
       "# HELP cache_hit_ratio The ratio of cache hits to total cache check requests",
       "# TYPE cache_hit_ratio gauge",
-      `cache_hit_ratio ${cacheHitRatio.toFixed(4)}`
+      `cache_hit_ratio ${cacheHitRatio.toFixed(4)}`,
+      "",
+      "# HELP concurrent_requests_current Number of currently active concurrent HTTP requests",
+      "# TYPE concurrent_requests_current gauge",
+      `concurrent_requests_current ${this.concurrentRequests}`,
+      "",
+      "# HELP concurrent_requests_peak Peak number of concurrent HTTP requests observed",
+      "# TYPE concurrent_requests_peak gauge",
+      `concurrent_requests_peak ${this.peakConcurrentRequests}`,
+      "",
+      "# HELP requests_rejected_overload_total Total number of requests rejected due to server overload",
+      "# TYPE requests_rejected_overload_total counter",
+      `requests_rejected_overload_total ${this.overloadRejections}`
     ].join("\n");
   }
 }

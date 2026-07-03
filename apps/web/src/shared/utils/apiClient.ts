@@ -66,6 +66,18 @@ export async function apiRequest(url: string, options: RequestOptions = {}): Pro
     throw new Error(errorData.message || "Your session has ended because your account was signed in from another device.");
   }
 
+  // Handle 503 Service Unavailable (Server Overloaded)
+  if (response.status === 503) {
+    let message = "Server is currently busy. Please try again in a few moments.";
+    if (errorData && errorData.code === "SERVER_OVERLOADED") {
+      message = errorData.message || message;
+    }
+    const error = new Error(message);
+    (error as any).code = "SERVER_OVERLOADED";
+    (error as any).statusCode = 503;
+    throw error;
+  }
+
   // Handle 401 Unauthorized (potential token expiration)
   const isPublicOrReauth =
     fullUrl.endsWith("/login") ||
