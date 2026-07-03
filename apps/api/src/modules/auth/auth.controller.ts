@@ -451,38 +451,9 @@ class AuthController {
     res.clearCookie("refreshToken", CLEAR_COOKIE_OPTIONS);
 
     return res.status(200).json({
-      message: "Account successfully scheduled for deletion. You have been logged out.",
+      message: "Account successfully deleted. You have been logged out.",
     });
   });
-
-  public recoverAccount = asyncHandler(async (
-    req: Request,
-    res: Response,
-  ) => {
-    const { email, otp, newPassword } = req.body;
-    if (typeof email !== "string" || typeof otp !== "string") {
-      return res.status(400).json({
-        message: "Email and verification code are required.",
-      });
-    }
-
-    const ip = req.ip || req.socket.remoteAddress || undefined;
-    const ua = req.headers["user-agent"] || undefined;
-    const fingerprint = req.headers["x-device-fingerprint"] as string | undefined;
-
-    const result = await authService.recoverAccount(email, otp, newPassword, ip, ua, fingerprint);
-
-    res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
-
-    return res.status(200).json({
-      message: "Account recovered successfully.",
-      data: {
-        user: result.user,
-        accessToken: result.accessToken,
-      },
-    });
-  });
-
   // --- Active Session Management ---
   public getSessions = asyncHandler(async (
     req: any,

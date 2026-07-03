@@ -54,12 +54,6 @@ router.post(
 );
 
 router.post(
-  "/recover",
-  authLimiter,
-  authController.recoverAccount.bind(authController),
-);
-
-router.post(
   "/oauth/login",
   authLimiter,
   authController.socialLogin.bind(authController),

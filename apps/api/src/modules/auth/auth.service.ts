@@ -9,6 +9,7 @@ import {
 
 import { authRepository } from "./auth.repository";
 import { db } from "../../core/database/postgres";
+import { redis } from "../../core/database/redis";
 import { usernameBloomFilter } from "./username-bloom-filter";
 import { sessionStore } from "./session.store";
 import { tokenBlocklistStore } from "../../core/security/blocklist.store";
@@ -181,28 +182,7 @@ class AuthService {
       ? await authRepository.findUserByEmail(input.identifier)
       : await authRepository.findUserByUsername(input.identifier);
 
-    // 1. Check if Account is Pending Deletion (Grace Period Check)
-    if (user.deletedAt) {
-      if (user.deletionScheduledFor && new Date() >= new Date(user.deletionScheduledFor)) {
-        // Deletion grace period has expired, treat as not found
-        throw new UserNotFoundError();
-      }
 
-      // Check password first before sending recovery OTP to prevent email spam/probing
-      const isPasswordValid = await verifyPassword(input.password, user.passwordHash);
-      if (!isPasswordValid) {
-        throw new InvalidCredentialsError();
-      }
-
-      // Automatically send recovery OTP
-      await otpService.sendOTP(user.email, OTPPurpose.REAUTHENTICATION, user.username);
-
-      throw new AppError({
-        message: "This account is scheduled for deletion. A verification code has been sent to your email to recover your account.",
-        statusCode: 403,
-        code: "AUTH_ACCOUNT_PENDING_DELETION",
-      });
-    }
 
     // 2. Check Account Lockout
     if (user.lockedUntil && new Date() < new Date(user.lockedUntil)) {
@@ -378,86 +358,64 @@ class AuthService {
     const user = await authRepository.findUserById(userId);
     await otpService.verifyOTP(user.email, OTPPurpose.EMAIL_VERIFICATION, otp);
 
-    const retentionHours = parseInt(process.env["ACCOUNT_DELETION_RETENTION_HOURS"] || "24", 10);
-    const scheduledFor = new Date(Date.now() + retentionHours * 60 * 60 * 1000);
+    // --- Phase 1: Synchronous Deletion ---
 
-    // Schedule deletion in DB
-    await authRepository.scheduleAccountDeletion(userId, scheduledFor);
+    // 1. Remove Redis entries associated with the user
+    if (redis) {
+      const userSessionsKey = `user:sessions:${userId}`;
+      const tokenIds = await redis.smembers(userSessionsKey);
+      
+      const keysToDelete = [userSessionsKey];
+      for (const id of tokenIds) {
+        keysToDelete.push(`session:${id}`);
+        keysToDelete.push(`geo:session:${id}`);
+      }
+      
+      try {
+        const otpKeys = await redis.keys(`otp:${user.email}:*`);
+        keysToDelete.push(...otpKeys);
+      } catch (err) {
+        console.error("[AuthService] Error fetching OTP keys from Redis:", err);
+      }
 
-    // Revoke all active sessions
-    await sessionStore.invalidateAllUserSessions(userId);
+      const uniqueKeys = Array.from(new Set(keysToDelete.filter(Boolean)));
+      if (uniqueKeys.length > 0) {
+        await redis.del(...uniqueKeys);
+      }
+    }
 
-    // Blocklist current access token
+    // 2. Queue background cleanup job
+    await db.query(
+      `
+        INSERT INTO user_cleanup_jobs (user_id, username, email, status, created_at, updated_at)
+        VALUES ($1, $2, $3, 'PENDING', NOW(), NOW())
+      `,
+      [userId, user.username, user.email]
+    );
+
+    // 3. Delete authentication & user record from PostgreSQL synchronously
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+      
+      await client.query("DELETE FROM refresh_tokens WHERE user_id = $1", [userId]);
+      await client.query("DELETE FROM audit_logs WHERE user_id = $1", [userId]);
+      await client.query("DELETE FROM password_resets WHERE user_id = $1", [userId]);
+      await client.query("DELETE FROM users WHERE id = $1", [userId]);
+
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    // 4. Blocklist current access token in Redis
     if (activeAccessToken) {
       await this.blocklistAccessToken(activeAccessToken);
     }
-
-    // Send confirmation email (grace period notification)
-    await emailService.enqueue(user.email, EmailType.GENERAL_ANNOUNCEMENT, {
-      title: "Account Scheduled for Deletion",
-      content: `Hello ${user.username},\n\nYour NexVault account has been scheduled for deletion. It will be permanently deleted on ${scheduledFor.toUTCString()}.\n\nIf this was not authorized, you can recover your account at any time before this date by logging in with your credentials.`,
-    });
-
-    await auditService.log({
-      userId,
-      action: "ACCOUNT_ENTERED_PENDING_DELETION",
-      metadata: { scheduledFor },
-    });
   }
-
-  public async recoverAccount(
-    email: string,
-    otp: string,
-    newPassword?: string,
-    ipAddress?: string,
-    userAgent?: string,
-    deviceFingerprint?: string,
-  ): Promise<LoginResult> {
-    const user = await authRepository.findUserByEmail(email);
-
-    if (!user.deletedAt) {
-      throw new AppError({
-        message: "Account is not scheduled for deletion.",
-        statusCode: 400,
-        code: "AUTH_ACCOUNT_NOT_PENDING_DELETION",
-      });
-    }
-
-    // Verify OTP
-    await otpService.verifyOTP(user.email, OTPPurpose.REAUTHENTICATION, otp);
-
-    // Cancel deletion in DB
-    await authRepository.cancelAccountDeletion(user.id);
-
-    // Optional password reset
-    if (newPassword) {
-      const passwordHash = await hashPassword(newPassword);
-      await authRepository.updateUserPassword(user.id, passwordHash);
-    }
-
-    // Send recovery confirmation email
-    await emailService.enqueue(user.email, EmailType.GENERAL_ANNOUNCEMENT, {
-      title: "Account Deletion Cancelled",
-      content: `Hello ${user.username},\n\nYour NexVault account deletion has been cancelled. Your account has been successfully restored to its active state.`,
-    });
-
-    await auditService.log({
-      userId: user.id,
-      action: "ACCOUNT_DELETION_CANCELLED",
-      ipAddress,
-      userAgent,
-    });
-
-    await auditService.log({
-      userId: user.id,
-      action: "RECOVERY_COMPLETED",
-      ipAddress,
-      userAgent,
-    });
-
-    return this.generateUserSession(user, ipAddress, userAgent, deviceFingerprint);
-  }
-
   // --- Sensitive Operations ---
   public async changePassword(userId: string, newPasswordMask: string, activeAccessToken?: string): Promise<void> {
     // Check if new password is breached

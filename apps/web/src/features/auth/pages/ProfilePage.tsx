@@ -510,7 +510,7 @@ export default function ProfilePage() {
       });
       clearSession();
       setDeleteModalOpen(false);
-      navigate("/register", { state: { message: "Your account deletion is scheduled successfully. You have been logged out." } });
+      navigate("/register", { state: { message: "Your account has been successfully deleted. You have been logged out." } });
     } catch (err: any) {
       setDeleteError(err.message || "Invalid deletion confirmation code.");
     } finally {

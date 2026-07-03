@@ -122,7 +122,26 @@ export async function initializeDatabase() {
       );
     `);
 
+    // 9.5 Create user_cleanup_jobs table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS user_cleanup_jobs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL,
+        username VARCHAR(255) NOT NULL,
+        email VARCHAR(255) NOT NULL,
+        status VARCHAR(50) DEFAULT 'PENDING',
+        retry_count INT DEFAULT 0,
+        max_retries INT DEFAULT 3,
+        last_error TEXT DEFAULT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
     // 10. Create indexes for quick lookup
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS idx_user_cleanup_jobs_status ON user_cleanup_jobs(status);
+    `);
     await db.query(`
       CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id);
     `);

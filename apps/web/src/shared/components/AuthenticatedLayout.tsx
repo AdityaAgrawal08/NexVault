@@ -500,8 +500,8 @@ export default function AuthenticatedLayout({ children }: AuthenticatedLayoutPro
           {/* User Section */}
           <div
             className="user-profile-section"
-            onClick={() => navigate("/profile")}
-            title="View Account Page"
+            onClick={() => navigate("/dashboard")}
+            title="Go to Home Dashboard"
           >
             <div className="drawer-avatar">{initials}</div>
             <div className="user-details">
