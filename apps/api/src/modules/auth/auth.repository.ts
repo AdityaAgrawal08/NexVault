@@ -665,6 +665,23 @@ export class AuthRepository {
       [userId]
     );
   }
+
+  public async updateUserProfile(
+    userId: string,
+    username: string,
+    phoneNumber: string,
+  ): Promise<void> {
+    await db.query(
+      `
+        UPDATE users
+        SET username = $1,
+            phone_number = $2,
+            updated_at = NOW()
+        WHERE id = $3
+      `,
+      [username, phoneNumber, userId]
+    );
+  }
 }
 
 export const authRepository = new AuthRepository();

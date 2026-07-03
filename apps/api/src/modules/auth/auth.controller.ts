@@ -13,6 +13,7 @@ import { auditService } from "../audit/audit.service";
 import { AppError } from "../../shared/errors/app-error";
 import { verifyRefreshToken } from "../../core/security/jwt";
 import { policyEngine } from "../../core/security/policy";
+import { geoVelocityService } from "../../core/security/geo.service";
 
 const COOKIE_OPTIONS = {
   httpOnly: true,
@@ -494,31 +495,47 @@ class AuthController {
 
     const sessions = await authService.getActiveSessions(userId);
     
-    const sessionsWithMetadata = sessions.map((s) => {
-      const ua = s.userAgent || "";
-      let browser = "Unknown Browser";
-      let os = "Unknown OS";
+    const sessionsWithMetadata = await Promise.all(
+      sessions.map(async (s) => {
+        const ua = s.userAgent || "";
+        let browser = "Unknown Browser";
+        let os = "Unknown OS";
 
-      if (ua.includes("Firefox")) browser = "Firefox";
-      else if (ua.includes("Chrome")) browser = "Chrome";
-      else if (ua.includes("Safari")) browser = "Safari";
-      else if (ua.includes("Edge")) browser = "Edge";
+        if (ua.includes("Firefox")) browser = "Firefox";
+        else if (ua.includes("Chrome")) browser = "Chrome";
+        else if (ua.includes("Safari")) browser = "Safari";
+        else if (ua.includes("Edge")) browser = "Edge";
 
-      if (ua.includes("Windows")) os = "Windows";
-      else if (ua.includes("Macintosh")) os = "macOS";
-      else if (ua.includes("Linux")) os = "Linux";
-      else if (ua.includes("Android")) os = "Android";
-      else if (ua.includes("iPhone") || ua.includes("iPad")) os = "iOS";
+        if (ua.includes("Windows")) os = "Windows";
+        else if (ua.includes("Macintosh")) os = "macOS";
+        else if (ua.includes("Linux")) os = "Linux";
+        else if (ua.includes("Android")) os = "Android";
+        else if (ua.includes("iPhone") || ua.includes("iPad")) os = "iOS";
 
-      return {
-        id: s.id,
-        ipAddress: s.ipAddress || "Unknown IP",
-        browser,
-        os,
-        createdAt: s.createdAt,
-        expiresAt: s.expiresAt,
-      };
-    });
+        let location = "Unknown Location";
+        if (s.ipAddress) {
+          try {
+            const loc = await geoVelocityService.getIpLocation(s.ipAddress);
+            if (loc && loc.city !== "Unknown") {
+              location = `${loc.city}, ${loc.country}`;
+            }
+          } catch (err) {
+            // Ignore geolocation fetch errors
+          }
+        }
+
+        return {
+          id: s.id,
+          ipAddress: s.ipAddress || "Unknown IP",
+          browser,
+          os,
+          createdAt: s.createdAt,
+          expiresAt: s.expiresAt,
+          isCurrent: s.id === req.user.tokenId,
+          location,
+        };
+      })
+    );
 
     return res.status(200).json({
       message: "Active sessions retrieved successfully.",
@@ -616,6 +633,40 @@ class AuthController {
     return res.status(200).json({
       message: "Email metrics retrieved successfully.",
       data: metrics,
+    });
+  });
+
+  // --- Safe Profile Retreival & Update ---
+  public getProfile = asyncHandler(async (
+    req: any,
+    res: Response,
+  ) => {
+    const userId = req.user.userId;
+    const profile = await authService.getProfile(userId);
+    return res.status(200).json({
+      message: "Profile retrieved successfully.",
+      data: profile,
+    });
+  });
+
+  public updateProfile = asyncHandler(async (
+    req: any,
+    res: Response,
+  ) => {
+    const userId = req.user.userId;
+    const { username, phoneNumber } = req.body;
+
+    if (typeof username !== "string" || !username.trim()) {
+      return res.status(400).json({ message: "Username is required." });
+    }
+    if (typeof phoneNumber !== "string") {
+      return res.status(400).json({ message: "Phone number is required." });
+    }
+
+    await authService.updateUserProfile(userId, username.trim(), phoneNumber.trim());
+
+    return res.status(200).json({
+      message: "Profile updated successfully.",
     });
   });
 }

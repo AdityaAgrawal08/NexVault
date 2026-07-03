@@ -8,6 +8,8 @@ import ResetPasswordPage from "@/features/auth/pages/ResetPasswordPage";
 import VerifyAccountPage from "@/features/auth/pages/VerifyAccountPage";
 import VerifyOTPPage from "@/features/auth/pages/VerifyOTPPage";
 import SessionsPage from "@/features/auth/pages/SessionsPage";
+import DashboardPage from "@/features/dashboard/pages/DashboardPage";
+import AuthenticatedLayout from "@/shared/components/AuthenticatedLayout";
 import { apiRequest, setAccessToken } from "@/shared/utils/apiClient";
 
 export default function App() {
@@ -74,8 +76,9 @@ export default function App() {
       <Route path="/register" element={<RegisterPage />} />
       <Route path="/verify-otp" element={<VerifyOTPPage />} />
       <Route path="/login" element={<LoginPage />} />
-      <Route path="/profile" element={<ProfilePage />} />
-      <Route path="/sessions" element={<SessionsPage />} />
+      <Route path="/dashboard" element={<AuthenticatedLayout><DashboardPage /></AuthenticatedLayout>} />
+      <Route path="/profile" element={<AuthenticatedLayout><ProfilePage /></AuthenticatedLayout>} />
+      <Route path="/sessions" element={<AuthenticatedLayout><SessionsPage /></AuthenticatedLayout>} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/verify-account" element={<VerifyAccountPage />} />

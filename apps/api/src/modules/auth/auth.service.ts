@@ -931,6 +931,51 @@ class AuthService {
       refreshToken,
     };
   }
+
+  public async getProfile(userId: string) {
+    const user = await authRepository.findUserById(userId);
+    return {
+      id: user.id,
+      username: user.username,
+      email: user.email,
+      phoneNumber: user.phoneNumber,
+      isVerified: user.isVerified,
+      twoFactorEnabled: user.twoFactorEnabled,
+      role: user.role,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+      deletionScheduledFor: user.deletionScheduledFor,
+    };
+  }
+
+  public async updateUserProfile(
+    userId: string,
+    username: string,
+    phoneNumber: string,
+  ): Promise<void> {
+    try {
+      const existingUser = await authRepository.findUserByUsername(username);
+      if (existingUser && existingUser.id !== userId) {
+        throw new AppError({
+          message: "Username is already taken.",
+          statusCode: 409,
+          code: "AUTH_USERNAME_TAKEN",
+        });
+      }
+    } catch (err: any) {
+      if (err.code !== "AUTH_USER_NOT_FOUND") {
+        throw err;
+      }
+    }
+
+    await authRepository.updateUserProfile(userId, username, phoneNumber);
+
+    await auditService.log({
+      userId,
+      action: "PROFILE_UPDATED",
+      metadata: { username, phoneNumber },
+    });
+  }
 }
 
 export const authService = new AuthService();

@@ -47,7 +47,7 @@ export default function RegisterPage() {
 
       setAccessToken(result.data.accessToken);
       localStorage.setItem("user", JSON.stringify(result.data.user));
-      navigate("/profile");
+      navigate("/dashboard");
     } catch (err: any) {
       console.error("Social login failed:", err);
     }

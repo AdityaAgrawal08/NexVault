@@ -57,7 +57,7 @@ export default function LoginPage() {
 
       setAccessToken(result.data.accessToken);
       localStorage.setItem("user", JSON.stringify(result.data.user));
-      navigate("/profile");
+      navigate("/dashboard");
     } catch (err: any) {
       if (err.code === "AUTH_SESSION_ALREADY_ACTIVE" || err.statusCode === 409) {
         setSessionConflict(true);
@@ -120,7 +120,7 @@ export default function LoginPage() {
         localStorage.setItem("user", JSON.stringify(result.data.user));
         setSessionConflict(false);
         setPendingFormData(null);
-        navigate("/profile");
+        navigate("/dashboard");
       }
     } catch (err: any) {
       setForceLoginError(err.message || "Failed to log out other devices.");
@@ -149,7 +149,7 @@ export default function LoginPage() {
 
       setAccessToken(result.data.accessToken);
       localStorage.setItem("user", JSON.stringify(result.data.user));
-      navigate("/profile");
+      navigate("/dashboard");
     } catch (err: any) {
       setMfaError(err.message || "Invalid verification code.");
     } finally {
@@ -180,7 +180,7 @@ export default function LoginPage() {
 
       setAccessToken(result.data.accessToken);
       localStorage.setItem("user", JSON.stringify(result.data.user));
-      navigate("/profile");
+      navigate("/dashboard");
     } catch (err: any) {
       setMfaError(err.message || "Invalid verification code.");
     } finally {
@@ -217,7 +217,7 @@ export default function LoginPage() {
 
       setAccessToken(result.data.accessToken);
       localStorage.setItem("user", JSON.stringify(result.data.user));
-      navigate("/profile");
+      navigate("/dashboard");
     } catch (err: any) {
       console.error("Social login failed:", err);
     }

@@ -137,6 +137,19 @@ router.post(
   authController.revokeOtherSessions.bind(authController),
 );
 
+// --- Profile Management ---
+router.get(
+  "/profile",
+  authMiddleware,
+  authController.getProfile.bind(authController),
+);
+
+router.patch(
+  "/profile",
+  authMiddleware,
+  authController.updateProfile.bind(authController),
+);
+
 // --- Active Session Management ---
 router.get(
   "/session-status",
