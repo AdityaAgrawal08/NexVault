@@ -178,9 +178,20 @@ class AuthService {
     userAgent?: string,
     deviceFingerprint?: string,
   ): Promise<LoginResult> {
-    const user = input.identifier.includes("@")
-      ? await authRepository.findUserByEmail(input.identifier)
-      : await authRepository.findUserByUsername(input.identifier);
+    let user;
+    try {
+      user = input.identifier.includes("@")
+        ? await authRepository.findUserByEmail(input.identifier)
+        : await authRepository.findUserByUsername(input.identifier);
+    } catch (error) {
+      if (error instanceof UserNotFoundError) {
+        // Run a dummy argon2 verification to keep request duration identical
+        const dummyHash = "$argon2id$v=19$m=65536,t=3,p=4$dummyhashdummyhashdummyhash";
+        await verifyPassword(input.password, dummyHash);
+        throw new InvalidCredentialsError();
+      }
+      throw error;
+    }
 
 
 

@@ -8,6 +8,7 @@ import { asyncHandler } from "../../shared/errors/async-handler";
 import { authService } from "./auth.service";
 import { usernameBloomFilter } from "./username-bloom-filter";
 import { authRepository } from "./auth.repository";
+import { UserNotFoundError } from "./auth.errors";
 import { emailWorker } from "../email/email.worker";
 import { auditService } from "../audit/audit.service";
 import { AppError } from "../../shared/errors/app-error";
@@ -102,10 +103,13 @@ class AuthController {
         message: "Username is already taken.",
       });
     } catch (error) {
-      return res.status(200).json({
-        available: true,
-        message: "Username is available.",
-      });
+      if (error instanceof UserNotFoundError) {
+        return res.status(200).json({
+          available: true,
+          message: "Username is available.",
+        });
+      }
+      throw error;
     }
   });
 
