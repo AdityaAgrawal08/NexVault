@@ -340,8 +340,16 @@ class AuthService {
   }
 
   // --- Secure Account Deletion & Recovery ---
-  public async requestAccountDeletion(userId: string): Promise<void> {
+  public async requestAccountDeletion(userId: string, email: string): Promise<void> {
     const user = await authRepository.findUserById(userId);
+    if (user.email.toLowerCase() !== email.toLowerCase()) {
+      throw new AppError({
+        message: "The entered email does not match your account.",
+        statusCode: 400,
+        code: "AUTH_EMAIL_MISMATCH",
+      });
+    }
+
     await otpService.sendOTP(user.email, OTPPurpose.EMAIL_VERIFICATION, user.username);
 
     await auditService.log({
@@ -352,15 +360,72 @@ class AuthService {
 
   public async confirmAccountDeletion(
     userId: string,
-    otp: string,
+    params: {
+      method: "email" | "password";
+      confirm: boolean;
+      email?: string;
+      otp?: string;
+      password?: string;
+    },
     activeAccessToken?: string,
   ): Promise<void> {
+    if (!params.confirm) {
+      throw new AppError({
+        message: "Confirmation checkbox not checked.",
+        statusCode: 400,
+        code: "AUTH_DELETION_CONFIRM_REQUIRED",
+      });
+    }
+
     const user = await authRepository.findUserById(userId);
-    await otpService.verifyOTP(user.email, OTPPurpose.EMAIL_VERIFICATION, otp);
 
-    // --- Phase 1: Synchronous Deletion ---
+    if (params.method === "email") {
+      if (!params.email || !params.otp) {
+        throw new AppError({
+          message: "Email and verification code are required.",
+          statusCode: 400,
+          code: "AUTH_DELETION_PARAMS_REQUIRED",
+        });
+      }
 
-    // 1. Remove Redis entries associated with the user
+      if (user.email.toLowerCase() !== params.email.toLowerCase()) {
+        throw new AppError({
+          message: "The entered email does not match your account.",
+          statusCode: 400,
+          code: "AUTH_EMAIL_MISMATCH",
+        });
+      }
+
+      await otpService.verifyOTP(user.email, OTPPurpose.EMAIL_VERIFICATION, params.otp);
+    } else if (params.method === "password") {
+      if (!params.password) {
+        throw new AppError({
+          message: "Password is required.",
+          statusCode: 400,
+          code: "AUTH_DELETION_PARAMS_REQUIRED",
+        });
+      }
+
+      const isValid = await verifyPassword(params.password, user.passwordHash);
+      if (!isValid) {
+        throw new AppError({
+          message: "Incorrect password.",
+          statusCode: 400,
+          code: "AUTH_REAUTH_PASSWORD_FAILED",
+        });
+      }
+    } else {
+      throw new AppError({
+        message: "Invalid deletion verification method.",
+        statusCode: 400,
+        code: "AUTH_INVALID_DELETION_METHOD",
+      });
+    }
+
+    // --- Phase 1: Invalidate and Revoke all active sessions ---
+    await sessionStore.invalidateAllUserSessions(userId, "ACCOUNT_DELETED");
+
+    // --- Phase 2: Clean up remaining user Redis entries ---
     if (redis) {
       const userSessionsKey = `user:sessions:${userId}`;
       const tokenIds = await redis.smembers(userSessionsKey);
@@ -384,23 +449,43 @@ class AuthService {
       }
     }
 
-    // 2. Queue background cleanup job
-    await db.query(
-      `
-        INSERT INTO user_cleanup_jobs (user_id, username, email, status, created_at, updated_at)
-        VALUES ($1, $2, $3, 'PENDING', NOW(), NOW())
-      `,
-      [userId, user.username, user.email]
-    );
-
-    // 3. Delete authentication & user record from PostgreSQL synchronously
+    // --- Phase 3: Synchronous PostgreSQL deletions in a single transaction ---
     const client = await db.connect();
     try {
       await client.query("BEGIN");
       
+      // 1. Delete user's remaining records from application tables
+      const tables = ["notes", "documents", "user_preferences", "media", "analytics"];
+      for (const table of tables) {
+        const checkTable = await client.query(
+          `SELECT EXISTS (
+             SELECT FROM information_schema.tables 
+             WHERE table_schema = 'public' 
+               AND table_name = $1
+           )`,
+          [table]
+        );
+        if (checkTable.rows[0]?.exists) {
+          await client.query(`DELETE FROM ${table} WHERE user_id = $1`, [userId]);
+        }
+      }
+
+      // 2. Delete user's authentication records
       await client.query("DELETE FROM refresh_tokens WHERE user_id = $1", [userId]);
       await client.query("DELETE FROM audit_logs WHERE user_id = $1", [userId]);
       await client.query("DELETE FROM password_resets WHERE user_id = $1", [userId]);
+      await client.query("DELETE FROM otps WHERE email = $1", [user.email]);
+
+      // 3. Queue the background cleanup job (e.g. for files and final email)
+      await client.query(
+        `
+          INSERT INTO user_cleanup_jobs (user_id, username, email, status, created_at, updated_at)
+          VALUES ($1, $2, $3, 'PENDING', NOW(), NOW())
+        `,
+        [userId, user.username, user.email]
+      );
+
+      // 4. Finally delete the user account record
       await client.query("DELETE FROM users WHERE id = $1", [userId]);
 
       await client.query("COMMIT");
@@ -411,7 +496,7 @@ class AuthService {
       client.release();
     }
 
-    // 4. Blocklist current access token in Redis
+    // --- Phase 4: Blocklist current access token in Redis ---
     if (activeAccessToken) {
       await this.blocklistAccessToken(activeAccessToken);
     }

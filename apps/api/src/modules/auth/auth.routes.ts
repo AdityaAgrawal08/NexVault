@@ -113,14 +113,12 @@ router.post(
 router.post(
   "/profile/delete/request",
   authMiddleware,
-  reauthMiddleware,
   authController.requestAccountDeletion.bind(authController),
 );
 
 router.post(
   "/profile/delete/confirm",
   authMiddleware,
-  reauthMiddleware,
   authController.confirmAccountDeletion.bind(authController),
 );
 

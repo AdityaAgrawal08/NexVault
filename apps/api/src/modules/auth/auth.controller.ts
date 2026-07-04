@@ -441,7 +441,13 @@ class AuthController {
     res: Response,
   ) => {
     const userId = req.user.userId;
-    await authService.requestAccountDeletion(userId);
+    const { email } = req.body;
+
+    if (typeof email !== "string" || !email.trim()) {
+      return res.status(400).json({ message: "Email address is required." });
+    }
+
+    await authService.requestAccountDeletion(userId, email.trim());
 
     return res.status(200).json({
       message: "A verification code has been sent to your email to confirm account deletion.",
@@ -453,14 +459,22 @@ class AuthController {
     res: Response,
   ) => {
     const userId = req.user.userId;
-    const { otp } = req.body;
+    const { method, confirm, email, otp, password } = req.body;
     const accessToken = req.token;
 
-    if (typeof otp !== "string") {
-      return res.status(400).json({ message: "Verification code is required." });
+    if (typeof method !== "string" || (method !== "email" && method !== "password")) {
+      return res.status(400).json({ message: "Valid deletion verification method is required." });
     }
 
-    await authService.confirmAccountDeletion(userId, otp, accessToken);
+    if (confirm !== true) {
+      return res.status(400).json({ message: "Confirmation checkbox not checked." });
+    }
+
+    await authService.confirmAccountDeletion(
+      userId,
+      { method, confirm, email, otp, password },
+      accessToken
+    );
 
     res.clearCookie("refreshToken", CLEAR_COOKIE_OPTIONS);
 

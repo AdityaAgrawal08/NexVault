@@ -93,11 +93,10 @@ export default function ProfilePage() {
 
   // Secure Account Deletion Dialog State
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
-  const [deleteStep, setDeleteStep] = useState<"verify_method" | "verify_password" | "verify_email_otp" | "final_warning">("verify_method");
+  const [deleteStep, setDeleteStep] = useState<"verify_method" | "verify_password" | "verify_email_otp">("verify_method");
   const [deletePassword, setDeletePassword] = useState("");
   const [deleteEmailInput, setDeleteEmailInput] = useState("");
   const [deleteOtpInput, setDeleteOtpInput] = useState("");
-  const [deleteVerificationToken, setDeleteVerificationToken] = useState("");
   const [deleteOtpSent, setDeleteOtpSent] = useState(false);
   const [deleteConfirmChecked, setDeleteConfirmChecked] = useState(false);
   const [deleteError, setDeleteError] = useState("");
@@ -395,7 +394,6 @@ export default function ProfilePage() {
     setDeletePassword("");
     setDeleteEmailInput("");
     setDeleteOtpInput("");
-    setDeleteVerificationToken("");
     setDeleteOtpSent(false);
     setDeleteConfirmChecked(false);
     setDeleteStep("verify_method");
@@ -417,18 +415,24 @@ export default function ProfilePage() {
       setDeleteError("Password is required.");
       return;
     }
+    if (!deleteConfirmChecked) {
+      setDeleteError("You must check the confirmation check box.");
+      return;
+    }
     setDeleteLoading(true);
     setDeleteError("");
     try {
-      // Reauth with password
-      const res = await apiRequest("/reauth/password", {
+      await apiRequest("/profile/delete/confirm", {
         method: "POST",
-        body: JSON.stringify({ password: deletePassword }),
+        body: JSON.stringify({
+          method: "password",
+          confirm: deleteConfirmChecked,
+          password: deletePassword,
+        }),
       });
-      setDeleteVerificationToken(res.data.reauthToken);
-      
-      // Step to next stage: hit request delete
-      await requestDeletionAPI(res.data.reauthToken);
+      clearSession();
+      setDeleteModalOpen(false);
+      navigate("/register", { state: { message: "Your account has been successfully deleted. You have been logged out." } });
     } catch (err: any) {
       setDeleteError(err.message || "Incorrect password.");
     } finally {
@@ -442,77 +446,43 @@ export default function ProfilePage() {
       setDeleteError("Email address is required.");
       return;
     }
-    if (deleteEmailInput.trim().toLowerCase() !== profileData?.email.toLowerCase()) {
-      setDeleteError("Entered email does not match registered email.");
-      return;
-    }
 
     setDeleteLoading(true);
     setDeleteError("");
     try {
       if (!deleteOtpSent) {
         // Send OTP
-        await apiRequest("/reauth/otp/send", { method: "POST" });
+        await apiRequest("/profile/delete/request", {
+          method: "POST",
+          body: JSON.stringify({ email: deleteEmailInput.trim() }),
+        });
         setDeleteOtpSent(true);
         setDeleteError("");
       } else {
-        // Verify OTP
-        const res = await apiRequest("/reauth/otp/verify", {
+        if (!deleteOtpInput.trim()) {
+          setDeleteError("Verification code is required.");
+          return;
+        }
+        if (!deleteConfirmChecked) {
+          setDeleteError("You must check the confirmation check box.");
+          return;
+        }
+        // Verify OTP & Confirm Deletion
+        await apiRequest("/profile/delete/confirm", {
           method: "POST",
-          body: JSON.stringify({ otp: deleteOtpInput.trim() }),
+          body: JSON.stringify({
+            method: "email",
+            confirm: deleteConfirmChecked,
+            email: deleteEmailInput.trim(),
+            otp: deleteOtpInput.trim(),
+          }),
         });
-        setDeleteVerificationToken(res.data.reauthToken);
-        
-        // Request Deletion
-        await requestDeletionAPI(res.data.reauthToken);
+        clearSession();
+        setDeleteModalOpen(false);
+        navigate("/register", { state: { message: "Your account has been successfully deleted. You have been logged out." } });
       }
     } catch (err: any) {
       setDeleteError(err.message || "Verification failed. Check code.");
-    } finally {
-      setDeleteLoading(false);
-    }
-  };
-
-  const requestDeletionAPI = async (token: string) => {
-    setDeleteLoading(true);
-    setDeleteError("");
-    try {
-      await apiRequest("/profile/delete/request", {
-        method: "POST",
-        headers: { "X-Reauth-Token": token },
-      });
-      setDeleteStep("final_warning");
-    } catch (err: any) {
-      setDeleteError(err.message || "Failed to register account deletion request.");
-    } finally {
-      setDeleteLoading(false);
-    }
-  };
-
-  const handleFinalDeletion = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!deleteConfirmChecked) {
-      setDeleteError("You must check the confirmation check box.");
-      return;
-    }
-    if (!deleteOtpInput) {
-      setDeleteError("Verification code from email is required.");
-      return;
-    }
-
-    setDeleteLoading(true);
-    setDeleteError("");
-    try {
-      await apiRequest("/profile/delete/confirm", {
-        method: "POST",
-        headers: { "X-Reauth-Token": deleteVerificationToken },
-        body: JSON.stringify({ otp: deleteOtpInput.trim() }),
-      });
-      clearSession();
-      setDeleteModalOpen(false);
-      navigate("/register", { state: { message: "Your account has been successfully deleted. You have been logged out." } });
-    } catch (err: any) {
-      setDeleteError(err.message || "Invalid deletion confirmation code.");
     } finally {
       setDeleteLoading(false);
     }
@@ -1436,6 +1406,21 @@ export default function ProfilePage() {
                     </button>
                   </div>
                 </div>
+
+                <div style={{ display: "flex", alignItems: "flex-start", gap: "8px", marginTop: "1rem", marginBottom: "1.5rem" }}>
+                  <input
+                    id="confirmCheckPass"
+                    type="checkbox"
+                    checked={deleteConfirmChecked}
+                    onChange={(e) => setDeleteConfirmChecked(e.target.checked)}
+                    style={{ width: "auto", marginTop: "3px", cursor: "pointer" }}
+                    required
+                  />
+                  <label htmlFor="confirmCheckPass" style={{ fontSize: "0.8rem", color: "var(--color-muted)", cursor: "pointer", fontWeight: "normal" }}>
+                    I explicitly confirm that I want to permanently delete my account and all associated data.
+                  </label>
+                </div>
+
                 <div style={{ display: "flex", gap: "0.75rem", marginTop: "1.5rem" }}>
                   <button
                     type="button"
@@ -1450,8 +1435,13 @@ export default function ProfilePage() {
                   >
                     Back
                   </button>
-                  <button type="submit" className="submit-btn" style={{ margin: 0 }} disabled={deleteLoading}>
-                    {deleteLoading ? "Verifying..." : "Verify & Request Code"}
+                  <button
+                    type="submit"
+                    className="submit-btn"
+                    style={{ margin: 0, backgroundColor: "var(--color-error)" }}
+                    disabled={deleteLoading || !deleteConfirmChecked}
+                  >
+                    {deleteLoading ? "Deleting..." : "Permanently Delete Account"}
                   </button>
                 </div>
               </form>
@@ -1474,20 +1464,35 @@ export default function ProfilePage() {
                     />
                   </div>
                 ) : (
-                  <div className="field">
-                    <label htmlFor="delOtp">6-Digit Verification Code</label>
-                    <input
-                      id="delOtp"
-                      type="text"
-                      maxLength={6}
-                      value={deleteOtpInput}
-                      onChange={(e) => setDeleteOtpInput(e.target.value)}
-                      placeholder="000000"
-                      style={{ textAlign: "center", letterSpacing: "4px", fontSize: "18px", fontWeight: "600" }}
-                      autoFocus
-                      required
-                    />
-                  </div>
+                  <>
+                    <div className="field">
+                      <label htmlFor="delOtp">6-Digit Verification Code</label>
+                      <input
+                        id="delOtp"
+                        type="text"
+                        maxLength={6}
+                        value={deleteOtpInput}
+                        onChange={(e) => setDeleteOtpInput(e.target.value)}
+                        placeholder="000000"
+                        style={{ textAlign: "center", letterSpacing: "4px", fontSize: "18px", fontWeight: "600" }}
+                        autoFocus
+                        required
+                      />
+                    </div>
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: "8px", marginTop: "1rem", marginBottom: "1.5rem" }}>
+                      <input
+                        id="confirmCheckEmail"
+                        type="checkbox"
+                        checked={deleteConfirmChecked}
+                        onChange={(e) => setDeleteConfirmChecked(e.target.checked)}
+                        style={{ width: "auto", marginTop: "3px", cursor: "pointer" }}
+                        required
+                      />
+                      <label htmlFor="confirmCheckEmail" style={{ fontSize: "0.8rem", color: "var(--color-muted)", cursor: "pointer", fontWeight: "normal" }}>
+                        I explicitly confirm that I want to permanently delete my account and all associated data.
+                      </label>
+                    </div>
+                  </>
                 )}
                 <div style={{ display: "flex", gap: "0.75rem", marginTop: "1.5rem" }}>
                   <button
@@ -1509,85 +1514,17 @@ export default function ProfilePage() {
                   >
                     Back
                   </button>
-                  <button type="submit" className="submit-btn" style={{ margin: 0 }} disabled={deleteLoading}>
+                  <button
+                    type="submit"
+                    className="submit-btn"
+                    style={{ margin: 0, backgroundColor: deleteOtpSent ? "var(--color-error)" : undefined }}
+                    disabled={deleteLoading || (deleteOtpSent && !deleteConfirmChecked)}
+                  >
                     {deleteLoading
                       ? "Processing..."
                       : !deleteOtpSent
                       ? "Send OTP Code"
-                      : "Verify Code"}
-                  </button>
-                </div>
-              </form>
-            )}
-
-            {/* STEP 3: FINAL DESTRUCTION WARNING */}
-            {deleteStep === "final_warning" && (
-              <form onSubmit={handleFinalDeletion}>
-                <div style={{
-                  padding: "1rem",
-                  border: "1px solid rgba(239, 68, 68, 0.3)",
-                  background: "rgba(239, 68, 68, 0.05)",
-                  borderRadius: "var(--radius)",
-                  marginBottom: "1.5rem",
-                }}>
-                  <strong style={{ color: "var(--color-error)", display: "block", marginBottom: "0.5rem", fontSize: "0.95rem" }}>
-                    ⚠️ WARNING: This action is permanent and cannot be undone.
-                  </strong>
-                  <p style={{ fontSize: "0.8rem", color: "var(--color-text)", margin: 0 }}>
-                    Deleting your account will permanently remove your profile, settings, documents, and all associated data.
-                  </p>
-                </div>
-
-                <div className="field" style={{ marginBottom: "1.5rem" }}>
-                  <label htmlFor="finalOtp" style={{ fontWeight: 600 }}>Enter Deletion OTP Code from Email</label>
-                  <input
-                    id="finalOtp"
-                    type="text"
-                    maxLength={6}
-                    value={deleteOtpInput}
-                    onChange={(e) => setDeleteOtpInput(e.target.value)}
-                    placeholder="000000"
-                    style={{ textAlign: "center", letterSpacing: "4px", fontSize: "18px", fontWeight: "600", marginTop: "4px" }}
-                    autoFocus
-                    required
-                  />
-                </div>
-
-                <div style={{ display: "flex", alignItems: "flex-start", gap: "8px", marginBottom: "1.5rem" }}>
-                  <input
-                    id="confirmCheck"
-                    type="checkbox"
-                    checked={deleteConfirmChecked}
-                    onChange={(e) => setDeleteConfirmChecked(e.target.checked)}
-                    style={{ width: "auto", marginTop: "3px", cursor: "pointer" }}
-                    required
-                  />
-                  <label htmlFor="confirmCheck" style={{ fontSize: "0.8rem", color: "var(--color-muted)", cursor: "pointer", fontWeight: "normal" }}>
-                    I explicitly confirm that I want to schedule my account and all my keys/vault files for permanent deletion.
-                  </label>
-                </div>
-
-                <div style={{ display: "flex", gap: "0.75rem" }}>
-                  <button
-                    type="button"
-                    onClick={() => setDeleteStep("verify_method")}
-                    className="submit-btn"
-                    style={{
-                      margin: 0,
-                      backgroundColor: "transparent",
-                      border: "1px solid rgba(255, 255, 255, 0.1)",
-                      color: "var(--color-muted)",
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="submit-btn"
-                    style={{ margin: 0, backgroundColor: "var(--color-error)" }}
-                    disabled={deleteLoading || !deleteConfirmChecked}
-                  >
-                    {deleteLoading ? "Deleting..." : "Permanently Delete Account"}
+                      : "Permanently Delete Account"}
                   </button>
                 </div>
               </form>
