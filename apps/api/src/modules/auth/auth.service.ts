@@ -647,18 +647,137 @@ class AuthService {
     await authRepository.verifyUser(user.id);
   }
 
-  // --- Social Logins (Simulated) ---
+  // --- Social Logins ---
   public async socialLogin(
     provider: "google" | "github",
-    profile: { id: string; email: string; username: string },
+    token: string,
     ipAddress?: string,
     userAgent?: string,
     deviceFingerprint?: string,
     force?: boolean,
   ): Promise<LoginResult> {
+    let email = "";
+    let username = "";
+
+    // 1. Token Verification Layer
+    if (token.startsWith("mock-")) {
+      // Mock OAuth Flow for local development and testing
+      const suffix = token.split("-").pop() || "dev";
+      email = `mock.${provider}.${suffix}@example.com`;
+      username = `${provider}_user_${suffix}`;
+    } else {
+      if (provider === "google") {
+        try {
+          const response = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${token}`);
+          if (!response.ok) {
+            throw new Error(`Google token validation returned status ${response.status}`);
+          }
+          const payload = (await response.json()) as {
+            email?: string;
+            email_verified?: string | boolean;
+            name?: string;
+          };
+
+          if (!payload.email) {
+            throw new Error("No email address returned in Google ID Token.");
+          }
+          if (payload.email_verified !== true && payload.email_verified !== "true") {
+            throw new Error("Google email address is not verified.");
+          }
+
+          email = payload.email.trim().toLowerCase();
+
+          // Generate suggested username from name or email prefix
+          const namePart = payload.name
+            ? payload.name.replace(/[^a-zA-Z0-9_]/g, "")
+            : payload.email.split("@")[0] || "user";
+          username = namePart.substring(0, 15);
+        } catch (err: any) {
+          console.error("[Google OAuth Error]", err);
+          throw new AppError({
+            message: `Google identity verification failed: ${err.message || "Invalid credential."}`,
+            statusCode: 401,
+            code: "AUTH_OAUTH_VERIFICATION_FAILED",
+          });
+        }
+      } else if (provider === "github") {
+        try {
+          // Fetch GitHub user profile
+          const userResponse = await fetch("https://api.github.com/user", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/json",
+              "User-Agent": "NexVault-Server",
+            },
+          });
+          if (!userResponse.ok) {
+            throw new Error(`GitHub user endpoint returned status ${userResponse.status}`);
+          }
+          const userPayload = (await userResponse.json()) as {
+            email?: string | null;
+            login?: string;
+          };
+
+          if (!userPayload.login) {
+            throw new Error("No username returned from GitHub API.");
+          }
+
+          username = userPayload.login.replace(/[^a-zA-Z0-9_]/g, "").substring(0, 15);
+
+          let gitHubEmail = userPayload.email;
+
+          // If GitHub user has hide-email enabled, call emails endpoint
+          if (!gitHubEmail) {
+            const emailsResponse = await fetch("https://api.github.com/user/emails", {
+              headers: {
+                Authorization: `Bearer ${token}`,
+                Accept: "application/json",
+                "User-Agent": "NexVault-Server",
+              },
+            });
+            if (emailsResponse.ok) {
+              const emails = (await emailsResponse.json()) as Array<{
+                email: string;
+                primary: boolean;
+                verified: boolean;
+              }>;
+              const primaryEmail = emails.find((e) => e.primary && e.verified) || emails.find((e) => e.verified);
+              if (primaryEmail) {
+                gitHubEmail = primaryEmail.email;
+              }
+            }
+          }
+
+          if (!gitHubEmail) {
+            throw new Error("No verified email address found on your GitHub profile.");
+          }
+
+          email = gitHubEmail.trim().toLowerCase();
+        } catch (err: any) {
+          console.error("[GitHub OAuth Error]", err);
+          throw new AppError({
+            message: `GitHub identity verification failed: ${err.message || "Invalid access token."}`,
+            statusCode: 401,
+            code: "AUTH_OAUTH_VERIFICATION_FAILED",
+          });
+        }
+      } else {
+        throw new AppError({
+          message: "Unsupported OAuth provider.",
+          statusCode: 400,
+          code: "AUTH_OAUTH_UNSUPPORTED_PROVIDER",
+        });
+      }
+    }
+
+    // Standardize generated username minimum/maximum boundaries
+    if (username.length < 3) {
+      username = `${username}123`;
+    }
+
     let user: any;
     try {
-      user = await authRepository.findUserByEmail(profile.email);
+      user = await authRepository.findUserByEmail(email);
     } catch (err) {
       if (err instanceof UserNotFoundError) {
         // Create user
@@ -666,8 +785,8 @@ class AuthService {
         const passwordHash = await hashPassword(tempPassword);
         const phone = "0000000000"; // placeholder
 
-        // 1. Concurrency-Safe Username Generation Bounded Loop
-        let username = profile.username;
+        // Concurrency-Safe Username Generation Bounded Loop
+        let finalUsername = username;
         let created: any = null;
         let attempts = 0;
         const maxAttempts = 5;
@@ -675,8 +794,8 @@ class AuthService {
         while (attempts < maxAttempts) {
           try {
             created = await authRepository.createUser({
-              username,
-              email: profile.email,
+              username: finalUsername,
+              email,
               phoneNumber: phone,
               passwordHash,
             });
@@ -684,7 +803,7 @@ class AuthService {
           } catch (createErr) {
             if (createErr instanceof UserAlreadyExistsError && createErr.field === "username") {
               attempts++;
-              username = `${profile.username}_${crypto.randomBytes(4).toString("hex")}`;
+              finalUsername = `${username}_${crypto.randomBytes(4).toString("hex")}`;
             } else {
               throw createErr; // Email/phone clash or other error, propagate immediately
             }

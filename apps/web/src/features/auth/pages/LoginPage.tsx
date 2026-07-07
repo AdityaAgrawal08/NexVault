@@ -190,15 +190,13 @@ export default function LoginPage() {
 
   async function handleSocialLogin(provider: "google" | "github") {
     try {
-      const mockEmail = `mock.${provider}.${Math.floor(Math.random() * 1000)}@example.com`;
-      const mockUsername = `${provider}_user_${Math.floor(Math.random() * 1000)}`;
+      const mockToken = `mock-${provider}-token-${Math.floor(Math.random() * 1000)}`;
       
       const result = await apiRequest("/oauth/login", {
         method: "POST",
         body: JSON.stringify({
           provider,
-          email: mockEmail,
-          username: mockUsername,
+          token: mockToken,
         }),
       });
 

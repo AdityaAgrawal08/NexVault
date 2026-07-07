@@ -8,6 +8,6 @@ export function isValidPhone(phone: string): boolean {
 }
 
 export function isValidUsername(username: string): boolean {
-  // 3–20 chars, alphanumeric + underscore, no leading/trailing underscore
-  return /^[a-zA-Z0-9][a-zA-Z0-9_]{1,18}[a-zA-Z0-9]$/.test(username);
+  // 3–32 chars, alphanumeric + underscore
+  return /^[a-zA-Z0-9_]{3,32}$/.test(username);
 }

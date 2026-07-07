@@ -9,6 +9,13 @@ import { authService } from "./auth.service";
 import { usernameBloomFilter } from "./username-bloom-filter";
 import { authRepository } from "./auth.repository";
 import { UserNotFoundError } from "./auth.errors";
+import {
+  loginSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
+  oauthLoginSchema,
+  deleteConfirmSchema,
+} from "../../shared/validators/auth.validator";
 import { emailWorker } from "../email/email.worker";
 import { auditService } from "../audit/audit.service";
 import { AppError } from "../../shared/errors/app-error";
@@ -174,26 +181,41 @@ class AuthController {
     req: Request,
     res: Response,
   ) => {
+    const result = loginSchema.safeParse(req.body);
+    if (!result.success) {
+      throw result.error;
+    }
+    const { identifier, password, force } = result.data;
+
     const ip = req.ip || req.socket.remoteAddress || undefined;
     const ua = req.headers["user-agent"] || undefined;
     const fingerprint = req.headers["x-device-fingerprint"] as string | undefined;
 
-    const result = await authService.login(req.body, ip, ua, fingerprint);
+    const loginResult = await authService.login(
+      {
+        identifier,
+        password,
+        ...(force !== undefined && { force }),
+      },
+      ip,
+      ua,
+      fingerprint
+    );
 
-    if (result.sessionsRevoked) {
+    if (loginResult.sessionsRevoked) {
       return res.status(200).json({
         message: "All other sessions have been logged out. Please log in again.",
         code: "AUTH_CONCURRENT_SESSIONS_REVOKED",
       });
     }
 
-    res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
+    res.cookie("refreshToken", loginResult.refreshToken, COOKIE_OPTIONS);
 
     return res.status(200).json({
       message: "Login successful.",
       data: {
-        user: result.user,
-        accessToken: result.accessToken,
+        user: loginResult.user,
+        accessToken: loginResult.accessToken,
       },
     });
   });
@@ -202,14 +224,13 @@ class AuthController {
     req: Request,
     res: Response,
   ) => {
-    const { email } = req.body;
-    if (typeof email !== "string" || !email.trim()) {
-      return res.status(400).json({
-        message: "Email is required.",
-      });
+    const result = forgotPasswordSchema.safeParse(req.body);
+    if (!result.success) {
+      throw result.error;
     }
+    const { email } = result.data;
 
-    await authService.forgotPassword(email.trim());
+    await authService.forgotPassword(email);
 
     return res.status(200).json({
       message: "If the email exists, a verification code has been sent.",
@@ -220,14 +241,13 @@ class AuthController {
     req: Request,
     res: Response,
   ) => {
-    const { email, otp, password } = req.body;
-    if (typeof email !== "string" || typeof otp !== "string" || typeof password !== "string") {
-      return res.status(400).json({
-        message: "Email, OTP, and new password are required.",
-      });
+    const result = resetPasswordSchema.safeParse(req.body);
+    if (!result.success) {
+      throw result.error;
     }
+    const { email, otp, password } = result.data;
 
-    await authService.resetPassword(email.trim(), otp.trim(), password);
+    await authService.resetPassword(email, otp, password);
 
     return res.status(200).json({
       message: "Password has been reset successfully.",
@@ -238,38 +258,32 @@ class AuthController {
     req: Request,
     res: Response,
   ) => {
-    const { provider, email, username } = req.body;
-
-    if (!provider || !email || !username) {
-      return res.status(400).json({
-        message: "Provider, email, and username are required.",
-      });
+    const result = oauthLoginSchema.safeParse(req.body);
+    if (!result.success) {
+      throw result.error;
     }
+    const { provider, token } = result.data;
 
     const ip = req.ip || req.socket.remoteAddress || undefined;
     const ua = req.headers["user-agent"] || undefined;
     const fingerprint = req.headers["x-device-fingerprint"] as string | undefined;
 
-    const result = await authService.socialLogin(provider, {
-      id: `mock-${provider}-${Date.now()}`,
-      email,
-      username,
-    }, ip, ua, fingerprint);
+    const loginResult = await authService.socialLogin(provider, token, ip, ua, fingerprint);
 
-    if (result.sessionsRevoked) {
+    if (loginResult.sessionsRevoked) {
       return res.status(200).json({
         message: "All other sessions have been logged out. Please log in again.",
         code: "AUTH_CONCURRENT_SESSIONS_REVOKED",
       });
     }
 
-    res.cookie("refreshToken", result.refreshToken, COOKIE_OPTIONS);
+    res.cookie("refreshToken", loginResult.refreshToken, COOKIE_OPTIONS);
 
     return res.status(200).json({
       message: "Social login successful.",
       data: {
-        user: result.user,
-        accessToken: result.accessToken,
+        user: loginResult.user,
+        accessToken: loginResult.accessToken,
       },
     });
   });
@@ -463,20 +477,22 @@ class AuthController {
     res: Response,
   ) => {
     const userId = req.user.userId;
-    const { method, confirm, email, otp, password } = req.body;
+    const result = deleteConfirmSchema.safeParse(req.body);
+    if (!result.success) {
+      throw result.error;
+    }
+    const { method, confirm, email, otp, password } = result.data;
     const accessToken = req.token;
-
-    if (typeof method !== "string" || (method !== "email" && method !== "password")) {
-      return res.status(400).json({ message: "Valid deletion verification method is required." });
-    }
-
-    if (confirm !== true) {
-      return res.status(400).json({ message: "Confirmation checkbox not checked." });
-    }
 
     await authService.confirmAccountDeletion(
       userId,
-      { method, confirm, email, otp, password },
+      {
+        method,
+        confirm,
+        ...(email !== undefined && { email }),
+        ...(otp !== undefined && { otp }),
+        ...(password !== undefined && { password }),
+      },
       accessToken
     );
 

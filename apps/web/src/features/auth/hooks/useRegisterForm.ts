@@ -30,7 +30,7 @@ export function useRegisterForm(onSuccess: (data: RegisterFormData) => Promise<v
     const errs: FieldErrors = {};
 
     if (!isValidUsername(form.username)) {
-      errs.username = "3–20 characters, alphanumeric and underscores only.";
+      errs.username = "3–32 characters, alphanumeric and underscores only.";
     }
     if (!isValidEmail(form.email)) {
       errs.email = "Enter a valid email address.";

@@ -3,7 +3,7 @@ import type { PasswordStrengthResult } from "@/shared/types/auth.types";
 export function evaluatePasswordStrength(password: string): PasswordStrengthResult {
   const failures: string[] = [];
 
-  if (password.length < 8) failures.push("Minimum 8 characters");
+  if (password.length < 12) failures.push("Minimum 12 characters");
   if (!/[A-Z]/.test(password)) failures.push("At least one uppercase letter");
   if (!/[a-z]/.test(password)) failures.push("At least one lowercase letter");
   if (!/[0-9]/.test(password)) failures.push("At least one number");

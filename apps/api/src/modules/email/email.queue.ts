@@ -213,7 +213,7 @@ class RedisEmailQueue implements EmailQueue {
         nextAttemptAt: jobData.nextAttemptAt.toISOString(),
         queuedAt: jobData.queuedAt.toISOString(),
       })
-      .lpush(queueKey, jobId)
+      .zadd(queueKey, jobData.nextAttemptAt.getTime(), jobId)
       .exec();
 
     return jobId;
@@ -230,21 +230,35 @@ class RedisEmailQueue implements EmailQueue {
       EmailPriority.BULK,
     ];
     
+    const now = Date.now();
+    
     for (const priority of priorities) {
       const queueKey = this.getQueueKey(priority);
       
-      const jobId = await redis.rpop(queueKey);
+      // Use Lua script to atomically find and pop the lowest score job that is due
+      const jobId = await redis.eval(
+        `
+          local key = KEYS[1]
+          local now = tonumber(ARGV[1])
+          local result = redis.call('ZRANGEBYSCORE', key, '-inf', now, 'LIMIT', 0, 1)
+          if #result > 0 then
+            local jobId = result[1]
+            redis.call('ZREM', key, jobId)
+            return jobId
+          end
+          return nil
+        `,
+        1,
+        queueKey,
+        now
+      ) as string | null;
+
       if (jobId) {
         const jobKey = this.getJobKey(jobId);
         const data = await redis.hgetall(jobKey);
 
         if (data && Object.keys(data).length > 0) {
           const nextAttempt = new Date(data["nextAttemptAt"] || Date.now());
-          if (nextAttempt > new Date()) {
-            await redis.lpush(queueKey, jobId);
-            continue;
-          }
-
           await redis.hset(jobKey, "status", "PROCESSING");
 
           return {
@@ -314,7 +328,7 @@ class RedisEmailQueue implements EmailQueue {
       });
 
       const queueKey = this.getQueueKey(priority);
-      await redis.lpush(queueKey, jobId);
+      await redis.zadd(queueKey, nextAttemptAt.getTime(), jobId);
     }
   }
 
@@ -337,7 +351,7 @@ class RedisEmailQueue implements EmailQueue {
 
     for (const priority of priorities) {
       const queueKey = this.getQueueKey(priority);
-      const len = await redis.llen(queueKey);
+      const len = await redis.zcard(queueKey);
       metrics.queueSize += len;
       metrics.byPriority[priority] = len;
     }
