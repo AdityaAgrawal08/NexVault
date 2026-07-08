@@ -114,6 +114,9 @@ class EmailWorker {
       const html = template.renderHtml(job.payload);
       const text = template.renderText(job.payload);
 
+      // Log verification code/payload to console for testing/development ease
+      console.log(`[DEV EMAIL OUTBOUND] Recipient: ${job.recipient}, Subject: ${template.subject}, Payload:`, job.payload);
+
       // 3. Send email using the provider
       await this.provider.send(job.recipient, template.subject, html, text);
 

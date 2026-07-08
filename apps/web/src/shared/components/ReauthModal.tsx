@@ -1,6 +1,7 @@
 import { useState, FormEvent } from "react";
 import { apiRequest } from "@/shared/utils/apiClient";
 import { usePasswordVisibility } from "@/shared/hooks/usePasswordVisibility";
+import OTPInput from "@/shared/components/OTPInput";
 
 export interface ReauthModalProps {
   isOpen: boolean;
@@ -237,18 +238,16 @@ export default function ReauthModal({ isOpen, onClose, onSuccess, actionName = "
         {method === "otp" && (
           <form onSubmit={handleOTPSubmit} noValidate>
             {otpSent && (
-              <div className="field">
-                <label htmlFor="reauthOtp">Verification Code</label>
-                <input
-                  id="reauthOtp"
-                  type="text"
-                  maxLength={6}
+              <div className="field" style={{ marginBottom: "1.5rem" }}>
+                <label htmlFor="reauth-otp-0" style={{ marginBottom: "0.5rem" }}>Verification Code</label>
+                <OTPInput
                   value={otp}
-                  onChange={(e) => setOtp(e.target.value)}
-                  placeholder="000000"
-                  style={{ textAlign: "center", letterSpacing: "4px", fontSize: "18px", fontWeight: "600" }}
-                  autoFocus
-                  required
+                  onChange={(newOtp) => {
+                    setError("");
+                    setOtp(newOtp);
+                  }}
+                  idPrefix="reauth-otp"
+                  disabled={loading}
                 />
               </div>
             )}
@@ -268,7 +267,7 @@ export default function ReauthModal({ isOpen, onClose, onSuccess, actionName = "
                 Cancel
               </button>
               {otpSent ? (
-                <button type="submit" className="submit-btn" style={{ margin: 0 }} disabled={loading}>
+                <button type="submit" className="submit-btn" style={{ margin: 0 }} disabled={loading || otp.length !== 6}>
                   {loading ? "Verifying…" : "Confirm"}
                 </button>
               ) : (

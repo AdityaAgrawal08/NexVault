@@ -4,6 +4,7 @@ import { usePasswordVisibility } from "@/shared/hooks/usePasswordVisibility";
 import PasswordStrengthBar from "@/shared/components/PasswordStrengthBar";
 import { isPasswordStrong } from "@/shared/utils/passwordStrength";
 import { apiRequest } from "@/shared/utils/apiClient";
+import OTPInput from "@/shared/components/OTPInput";
 
 export default function ResetPasswordPage() {
   const [searchParams] = useSearchParams();
@@ -81,17 +82,15 @@ export default function ResetPasswordPage() {
             </div>
           )}
 
-          <div className="field">
-            <label htmlFor="otp">Verification Code</label>
-            <input
-              id="otp"
-              type="text"
-              maxLength={6}
+          <div className="field" style={{ marginBottom: "1.5rem" }}>
+            <label htmlFor="otp-0" style={{ marginBottom: "0.5rem" }}>Verification Code</label>
+            <OTPInput
               value={otp}
-              onChange={(e) => setOtp(e.target.value)}
-              placeholder="000000"
-              style={{ textAlign: "center", letterSpacing: "4px", fontSize: "18px", fontWeight: "600" }}
-              required
+              onChange={(newOtp) => {
+                setError("");
+                setOtp(newOtp);
+              }}
+              idPrefix="otp"
             />
           </div>
 
@@ -161,7 +160,7 @@ export default function ResetPasswordPage() {
             )}
           </div>
 
-          <button type="submit" className="submit-btn" disabled={loading || !email}>
+          <button type="submit" className="submit-btn" disabled={loading || !email || otp.length !== 6}>
             {loading ? "Updating password…" : "Reset Password"}
           </button>
         </form>

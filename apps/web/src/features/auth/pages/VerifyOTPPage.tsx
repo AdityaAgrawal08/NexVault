@@ -1,11 +1,12 @@
-import { useState, useEffect, useRef, FormEvent } from "react";
+import { useState, useEffect, FormEvent } from "react";
 import { Link, useNavigate, useLocation, Navigate } from "react-router-dom";
 import { apiRequest } from "@/shared/utils/apiClient";
+import OTPInput from "@/shared/components/OTPInput";
 
 export default function VerifyOTPPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const inputRef = useRef<HTMLInputElement>(null);
+
 
   // Retrieve registration data carried over from the registration page
   const registrationData = location.state?.registrationData;
@@ -17,12 +18,7 @@ export default function VerifyOTPPage() {
   const [loading, setLoading] = useState(false);
   const [resending, setResending] = useState(false);
 
-  // Focus input automatically on open
-  useEffect(() => {
-    if (registrationData && inputRef.current) {
-      inputRef.current.focus();
-    }
-  }, [registrationData]);
+
 
   // Countdown timer logic
   useEffect(() => {
@@ -141,28 +137,15 @@ export default function VerifyOTPPage() {
 
         <form onSubmit={handleVerifyAndCreate} noValidate>
           <div className="field" style={{ marginBottom: "1.5rem" }}>
-            <label htmlFor="otp">Verification Code</label>
-            <input
-              id="otp"
-              ref={inputRef}
-              type="text"
-              maxLength={6}
+            <label htmlFor="otp-0" style={{ marginBottom: "0.5rem" }}>Verification Code</label>
+            <OTPInput
               value={otp}
-              onChange={(e) => {
+              onChange={(newOtp) => {
                 setError("");
-                // Keep only alphanumeric characters and limit to 6 chars
-                const clean = e.target.value.replace(/[^A-Za-z0-9]/g, "").substring(0, 6);
-                setOtp(clean);
+                setOtp(newOtp);
               }}
-              placeholder="Code"
-              style={{
-                textAlign: "center",
-                letterSpacing: "8px",
-                fontSize: "18px",
-                fontWeight: "700",
-                textTransform: "uppercase"
-              }}
-              required
+              disabled={loading}
+              idPrefix="otp"
             />
           </div>
 

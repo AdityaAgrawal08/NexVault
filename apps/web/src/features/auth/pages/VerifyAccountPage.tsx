@@ -1,6 +1,7 @@
 import { useState, FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { apiRequest } from "@/shared/utils/apiClient";
+import OTPInput from "@/shared/components/OTPInput";
 
 export default function VerifyAccountPage() {
   const navigate = useNavigate();
@@ -132,21 +133,20 @@ export default function VerifyAccountPage() {
               Enter the 6-digit verification code sent to <strong>{email}</strong>.
             </p>
 
-            <div className="field">
-              <label htmlFor="otp">Verification Code</label>
-              <input
-                id="otp"
-                type="text"
-                maxLength={6}
+            <div className="field" style={{ marginBottom: "1.5rem" }}>
+              <label htmlFor="otp-0" style={{ marginBottom: "0.5rem" }}>Verification Code</label>
+              <OTPInput
                 value={otp}
-                onChange={(e) => setOtp(e.target.value)}
-                placeholder="000000"
-                style={{ textAlign: "center", letterSpacing: "4px", fontSize: "16px", fontWeight: "600" }}
-                required
+                onChange={(newOtp) => {
+                  setError("");
+                  setOtp(newOtp);
+                }}
+                disabled={loading}
+                idPrefix="otp"
               />
             </div>
 
-            <button type="submit" className="submit-btn" disabled={loading}>
+            <button type="submit" className="submit-btn" disabled={loading || otp.length !== 6}>
               {loading ? "Verifying…" : "Verify Account"}
             </button>
 

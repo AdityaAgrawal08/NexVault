@@ -17,7 +17,7 @@ export const forgotPasswordSchema = z
 export const resetPasswordSchema = z
   .object({
     email: z.string().trim().toLowerCase().email("Invalid email address."),
-    otp: z.string().trim().length(6, "Verification code must be exactly 6 characters."),
+    otp: z.string().trim().length(6, "Verification code must be exactly 6 digits.").regex(/^\d+$/, "Verification code must contain only digits."),
     password: z
       .string()
       .min(12, "Password must be at least 12 characters.")
@@ -41,7 +41,7 @@ export const deleteConfirmSchema = z
     method: z.enum(["email", "password"]),
     confirm: z.boolean().refine((val) => val === true, "Explicit confirmation is required."),
     email: z.string().trim().toLowerCase().email("Invalid email address.").optional(),
-    otp: z.string().trim().length(6, "Verification code must be exactly 6 characters.").optional(),
+    otp: z.string().trim().length(6, "Verification code must be exactly 6 digits.").regex(/^\d+$/, "Verification code must contain only digits.").optional(),
     password: z.string().optional(),
   })
   .strict();

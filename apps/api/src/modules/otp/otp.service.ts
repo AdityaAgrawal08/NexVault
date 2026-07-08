@@ -20,13 +20,13 @@ class OTPService {
     return crypto.createHash("sha256").update(otp).digest("hex");
   }
 
-  private generateAlphanumericOTP(length = 6): string {
-    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  private generateNumericOTP(length = 6): string {
+    const chars = "0123456789";
     let result = "";
     while (result.length < length) {
       const byte = crypto.randomBytes(1)[0];
-      if (byte !== undefined && byte < 248) { // Eliminate modulo bias (62 * 4 = 248)
-        const char = chars[byte % 62];
+      if (byte !== undefined && byte < 250) { // Eliminate modulo bias (10 * 25 = 250)
+        const char = chars[byte % 10];
         if (char !== undefined) {
           result += char;
         }
@@ -53,8 +53,8 @@ class OTPService {
       }
     }
 
-    // 2. Generate a secure 6-character alphanumeric OTP
-    const otp = this.generateAlphanumericOTP(6);
+    // 2. Generate a secure 6-character numeric OTP
+    const otp = this.generateNumericOTP(6);
     const otpHash = this.hashOTP(otp);
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes validity
 
@@ -113,16 +113,6 @@ class OTPService {
         });
       }
 
-      // Check attempts limit (5 max)
-      if (record.attempts >= 5) {
-        await otpStore.deleteOTP(record.id, email, purpose);
-        throw new AppError({
-          message: "Too many failed attempts. Please request a new code.",
-          statusCode: 400,
-          code: "OTP_MAX_ATTEMPTS_EXCEEDED",
-        });
-      }
-
       // Constant-time comparison of SHA-256 hashes
       const inputHash = this.hashOTP(otp.trim());
       const isMatch = crypto.timingSafeEqual(
@@ -131,18 +121,9 @@ class OTPService {
       );
 
       if (!isMatch) {
-        const currentAttempts = await otpStore.incrementAttempts(record.id, email, purpose);
-        if (currentAttempts >= 5) {
-          await otpStore.deleteOTP(record.id, email, purpose);
-          throw new AppError({
-            message: "Too many failed attempts. Please request a new code.",
-            statusCode: 400,
-            code: "OTP_MAX_ATTEMPTS_EXCEEDED",
-          });
-        }
-
+        await otpStore.incrementAttempts(record.id, email, purpose);
         throw new AppError({
-          message: `Invalid verification code. You have ${5 - currentAttempts} attempts remaining.`,
+          message: "Invalid verification code.",
           statusCode: 400,
           code: "OTP_INVALID",
         });
