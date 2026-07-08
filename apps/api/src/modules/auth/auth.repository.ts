@@ -26,6 +26,8 @@ export interface RefreshTokenRecord {
   userAgent: string | null;
   deviceFingerprint: string | null;
   revocationReason: string | null;
+  sessionId: string;
+  revokedAt: Date | null;
 }
 
 export class AuthRepository {
@@ -317,15 +319,18 @@ export class AuthRepository {
   }
 
   // --- Refresh Token & Session Management ---
+  // --- Refresh Token & Session Management ---
   public async createRefreshToken(
     userId: string,
     expiresAt: Date,
     ipAddress?: string | null,
     userAgent?: string | null,
     deviceFingerprint?: string | null,
-  ): Promise<{ id: string; rawToken: string }> {
+    sessionId?: string | null,
+  ): Promise<{ id: string; sessionId: string; rawToken: string }> {
     const rawToken = crypto.randomBytes(40).toString("hex");
     const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+    const activeSessionId = sessionId || crypto.randomUUID();
 
     const { rows } = await db.query<{ id: string }>(
       `
@@ -335,12 +340,13 @@ export class AuthRepository {
           expires_at,
           ip_address,
           user_agent,
-          device_fingerprint
+          device_fingerprint,
+          session_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING id
       `,
-      [userId, tokenHash, expiresAt, ipAddress || null, userAgent || null, deviceFingerprint || null],
+      [userId, tokenHash, expiresAt, ipAddress || null, userAgent || null, deviceFingerprint || null, activeSessionId],
     );
 
     const firstRow = rows[0];
@@ -350,6 +356,7 @@ export class AuthRepository {
 
     return {
       id: firstRow.id,
+      sessionId: activeSessionId,
       rawToken,
     };
   }
@@ -372,7 +379,9 @@ export class AuthRepository {
           ip_address AS "ipAddress",
           user_agent AS "userAgent",
           device_fingerprint AS "deviceFingerprint",
-          revocation_reason AS "revocationReason"
+          revocation_reason AS "revocationReason",
+          session_id AS "sessionId",
+          revoked_at AS "revokedAt"
         FROM refresh_tokens
         WHERE token_hash = $1
         LIMIT 1
@@ -399,7 +408,9 @@ export class AuthRepository {
           ip_address AS "ipAddress",
           user_agent AS "userAgent",
           device_fingerprint AS "deviceFingerprint",
-          revocation_reason AS "revocationReason"
+          revocation_reason AS "revocationReason",
+          session_id AS "sessionId",
+          revoked_at AS "revokedAt"
         FROM refresh_tokens
         WHERE id = $1
         LIMIT 1
@@ -414,7 +425,7 @@ export class AuthRepository {
     await db.query(
       `
         UPDATE refresh_tokens
-        SET is_revoked = TRUE, revocation_reason = $2
+        SET is_revoked = TRUE, revocation_reason = $2, revoked_at = CURRENT_TIMESTAMP
         WHERE id = $1
       `,
       [id, reason || null],
@@ -425,7 +436,7 @@ export class AuthRepository {
     await db.query(
       `
         UPDATE refresh_tokens
-        SET is_revoked = TRUE, revocation_reason = $2
+        SET is_revoked = TRUE, revocation_reason = $2, revoked_at = CURRENT_TIMESTAMP
         WHERE user_id = $1
       `,
       [userId, reason || null],
@@ -439,13 +450,20 @@ export class AuthRepository {
     ipAddress?: string | null,
     userAgent?: string | null,
     deviceFingerprint?: string | null,
-  ): Promise<{ id: string; rawToken: string }> {
+  ): Promise<{ id: string; sessionId: string; rawToken: string }> {
     const rawToken = crypto.randomBytes(40).toString("hex");
     const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
 
     const client = await db.connect();
     try {
       await client.query("BEGIN");
+
+      // 1. Get the session_id from the old token
+      const oldTokenRes = await client.query(
+        `SELECT session_id FROM refresh_tokens WHERE id = $1`,
+        [oldTokenId]
+      );
+      const sessionId = oldTokenRes.rows[0]?.session_id || oldTokenId;
 
       const { rows } = await client.query<{ id: string }>(
         `
@@ -455,12 +473,13 @@ export class AuthRepository {
             expires_at,
             ip_address,
             user_agent,
-            device_fingerprint
+            device_fingerprint,
+            session_id
           )
-          VALUES ($1, $2, $3, $4, $5, $6)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
           RETURNING id
         `,
-        [userId, tokenHash, expiresAt, ipAddress || null, userAgent || null, deviceFingerprint || null],
+        [userId, tokenHash, expiresAt, ipAddress || null, userAgent || null, deviceFingerprint || null, sessionId],
       );
       const firstRow = rows[0];
       if (!firstRow) {
@@ -472,7 +491,8 @@ export class AuthRepository {
         `
           UPDATE refresh_tokens
           SET is_revoked = TRUE,
-              replaced_by = $1
+              replaced_by = $1,
+              revoked_at = CURRENT_TIMESTAMP
           WHERE id = $2
         `,
         [newTokenId, oldTokenId],
@@ -482,6 +502,7 @@ export class AuthRepository {
 
       return {
         id: newTokenId,
+        sessionId,
         rawToken,
       };
     } catch (error) {
@@ -496,9 +517,10 @@ export class AuthRepository {
     const { rows } = await db.readQuery(
       `
         SELECT
-          id,
+          session_id AS "id",
           ip_address AS "ipAddress",
           user_agent AS "userAgent",
+          device_fingerprint AS "deviceFingerprint",
           created_at AS "createdAt",
           expires_at AS "expiresAt"
         FROM refresh_tokens
@@ -514,22 +536,52 @@ export class AuthRepository {
     await db.query(
       `
         UPDATE refresh_tokens
-        SET is_revoked = TRUE
-        WHERE id = $1 AND user_id = $2
+        SET is_revoked = TRUE, revoked_at = CURRENT_TIMESTAMP, revocation_reason = 'REVOKED_BY_USER'
+        WHERE (id = $1 OR session_id = $1) AND user_id = $2
       `,
       [tokenId, userId]
     );
   }
 
-  public async revokeOtherSessions(userId: string, currentTokenId: string): Promise<void> {
+  public async revokeSessionById(sessionId: string, userId: string): Promise<void> {
     await db.query(
       `
         UPDATE refresh_tokens
-        SET is_revoked = TRUE
-        WHERE user_id = $1 AND id <> $2
+        SET is_revoked = TRUE, revoked_at = CURRENT_TIMESTAMP, revocation_reason = 'REVOKED_BY_USER'
+        WHERE (session_id = $1 OR id = $1) AND user_id = $2
       `,
-      [userId, currentTokenId]
+      [sessionId, userId]
     );
+  }
+
+  public async revokeOtherSessions(userId: string, currentTokenId: string): Promise<void> {
+    // Revoke by finding the current token's session_id, and revoking all other session_ids!
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+      
+      const currentTokenRes = await client.query(
+        `SELECT session_id FROM refresh_tokens WHERE id = $1`,
+        [currentTokenId]
+      );
+      const currentSessionId = currentTokenRes.rows[0]?.session_id || currentTokenId;
+
+      await client.query(
+        `
+          UPDATE refresh_tokens
+          SET is_revoked = TRUE, revoked_at = CURRENT_TIMESTAMP, revocation_reason = 'REVOKED_BY_USER'
+          WHERE user_id = $1 AND session_id <> $2
+        `,
+        [userId, currentSessionId]
+      );
+
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   // OTP Management

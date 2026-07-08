@@ -9,7 +9,8 @@ export interface SessionStore {
     expiresAt: Date,
     ipAddress?: string | null,
     userAgent?: string | null,
-    deviceFingerprint?: string | null
+    deviceFingerprint?: string | null,
+    sessionId?: string | null
   ): Promise<void>;
   isSessionActive(tokenId: string): Promise<boolean>;
   getSessionData(tokenId: string): Promise<any | null>;
@@ -34,7 +35,8 @@ class PluggableSessionStore implements SessionStore {
     expiresAt: Date,
     ipAddress?: string | null,
     userAgent?: string | null,
-    deviceFingerprint?: string | null
+    deviceFingerprint?: string | null,
+    sessionId?: string | null
   ): Promise<void> {
     if (redis) {
       const key = this.getSessionKey(tokenId);
@@ -47,6 +49,7 @@ class PluggableSessionStore implements SessionStore {
         userAgent: userAgent || null,
         deviceFingerprint: deviceFingerprint || null,
         expiresAt: expiresAt.toISOString(),
+        sessionId: sessionId || null,
       };
 
       const pipeline = redis.pipeline();
@@ -88,6 +91,7 @@ class PluggableSessionStore implements SessionStore {
       userAgent: tokenRecord.userAgent,
       deviceFingerprint: tokenRecord.deviceFingerprint,
       expiresAt: tokenRecord.expiresAt,
+      sessionId: tokenRecord.sessionId,
     };
 
     // If it was in Postgres but not Redis, re-cache it in Redis
@@ -98,7 +102,8 @@ class PluggableSessionStore implements SessionStore {
         new Date(tokenRecord.expiresAt),
         tokenRecord.ipAddress,
         tokenRecord.userAgent,
-        tokenRecord.deviceFingerprint
+        tokenRecord.deviceFingerprint,
+        tokenRecord.sessionId
       );
     }
 

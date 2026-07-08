@@ -1,3 +1,4 @@
+import type { Request } from "express";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { PoolClient } from "pg";
@@ -49,6 +50,10 @@ import type {
 const JWT_SECRET = process.env.JWT_SECRET || "super-secure-dev-jwt-secret-key-123456";
 
 class AuthService {
+  public getClientIp(req: Request | any): string {
+    return (req.headers["x-simulated-ip"] as string) || req.ip || req.socket.remoteAddress || "unknown";
+  }
+
   // --- Device Fingerprint Helper ---
   public getDeviceFingerprintHash(
     userAgent?: string,
@@ -254,8 +259,11 @@ class AuthService {
     }
 
     // 3. Single Active Session Enforcement
+    const fingerprintHash = this.getDeviceFingerprintHash(userAgent, ipAddress, deviceFingerprint);
     const activeSessions = await authRepository.findActiveSessionsForUser(user.id);
-    if (activeSessions.length > 0 && !input.force) {
+    const otherDeviceSessions = activeSessions.filter(s => s.deviceFingerprint !== fingerprintHash);
+
+    if (otherDeviceSessions.length > 0 && !input.force) {
       await auditService.log({
         userId: user.id,
         action: "LOGIN_BLOCKED_SESSION_EXISTS",
@@ -270,7 +278,7 @@ class AuthService {
       });
     }
 
-    if (activeSessions.length > 0 && input.force) {
+    if (otherDeviceSessions.length > 0 && input.force) {
       // Log out everywhere and DO NOT continue login immediately
       await auditService.log({
         userId: user.id,
@@ -293,6 +301,12 @@ class AuthService {
       };
     }
 
+    // Invalidate existing sessions on this same device to prevent duplicates
+    const sameDeviceSessions = activeSessions.filter(s => s.deviceFingerprint === fingerprintHash);
+    for (const sess of sameDeviceSessions) {
+      await authRepository.revokeSession(sess.id, user.id);
+    }
+
     // Log successful login
     await auditService.log({
       userId: user.id,
@@ -301,7 +315,22 @@ class AuthService {
       userAgent,
     });
 
-    return this.generateUserSession(user, ipAddress, userAgent, deviceFingerprint);
+    // Device Recognition Check
+    const existingTokens = await db.query(
+      `SELECT id FROM refresh_tokens WHERE user_id = $1 AND device_fingerprint = $2 LIMIT 1`,
+      [user.id, fingerprintHash]
+    );
+
+    if (existingTokens.rows.length === 0) {
+      await emailService.enqueue(user.email, EmailType.SECURITY_ALERT, {
+        username: user.username,
+        alertMessage: "A new login was detected from a new device or browser.",
+        ipAddress: ipAddress || "Unknown",
+      });
+    }
+
+    const sessionId = crypto.randomUUID();
+    return this.generateUserSession(user, ipAddress, userAgent, deviceFingerprint, sessionId);
   }
 
   // --- Re-authentication ---
@@ -838,8 +867,11 @@ class AuthService {
     }
 
     // Single active session check for OAuth
+    const fingerprintHash = this.getDeviceFingerprintHash(userAgent, ipAddress, deviceFingerprint);
     const activeSessions = await authRepository.findActiveSessionsForUser(user.id);
-    if (activeSessions.length > 0 && !force) {
+    const otherDeviceSessions = activeSessions.filter(s => s.deviceFingerprint !== fingerprintHash);
+
+    if (otherDeviceSessions.length > 0 && !force) {
       throw new AppError({
         message: "An active session already exists on another device.",
         statusCode: 409,
@@ -847,14 +879,35 @@ class AuthService {
       });
     }
 
-    if (activeSessions.length > 0 && force) {
+    if (otherDeviceSessions.length > 0 && force) {
       await sessionStore.invalidateAllUserSessions(user.id, "CONCURRENT_LOGIN");
       return {
         sessionsRevoked: true,
       };
     }
 
-    return this.generateUserSession(user, ipAddress, userAgent, deviceFingerprint);
+    // Invalidate existing sessions on this same device to prevent duplicates
+    const sameDeviceSessions = activeSessions.filter(s => s.deviceFingerprint === fingerprintHash);
+    for (const sess of sameDeviceSessions) {
+      await authRepository.revokeSession(sess.id, user.id);
+    }
+
+    // Device Recognition Check
+    const existingTokens = await db.query(
+      `SELECT id FROM refresh_tokens WHERE user_id = $1 AND device_fingerprint = $2 LIMIT 1`,
+      [user.id, fingerprintHash]
+    );
+
+    if (existingTokens.rows.length === 0) {
+      await emailService.enqueue(user.email, EmailType.SECURITY_ALERT, {
+        username: user.username,
+        alertMessage: "A new login was detected from a new device or browser.",
+        ipAddress: ipAddress || "Unknown",
+      });
+    }
+
+    const sessionId = crypto.randomUUID();
+    return this.generateUserSession(user, ipAddress, userAgent, deviceFingerprint, sessionId);
   }
 
   // --- Refresh Session ---
@@ -888,6 +941,45 @@ class AuthService {
 
     // 2. Detect Refresh Token Reuse (RTR Violation / Theft)
     if (tokenRecord && (tokenRecord.isRevoked || tokenRecord.replacedBy)) {
+      // Concurrency/RTR grace period check (30 seconds)
+      const revokedAt = tokenRecord.revokedAt ? new Date(tokenRecord.revokedAt).getTime() : 0;
+      const isWithinGracePeriod = Date.now() - revokedAt < 30 * 1000;
+
+      if (isWithinGracePeriod && tokenRecord.replacedBy) {
+        // Retrieve the replacement token record
+        const replacementToken = await authRepository.findRefreshTokenById(tokenRecord.replacedBy);
+        // If it is active and not revoked and not expired, return its login result
+        if (replacementToken && !replacementToken.isRevoked && new Date(replacementToken.expiresAt) > new Date()) {
+          const user = await authRepository.findUserById(replacementToken.userId);
+          const newAccessToken = generateAccessToken({
+            userId: user.id,
+            username: user.username,
+            email: user.email,
+            role: user.role,
+            tokenId: replacementToken.id,
+            sessionId: replacementToken.sessionId,
+          });
+
+          const newRefreshToken = generateRefreshToken({
+            userId: user.id,
+            tokenId: replacementToken.id,
+            sessionId: replacementToken.sessionId,
+          });
+
+          return {
+            user: {
+              id: user.id,
+              username: user.username,
+              email: user.email,
+              phoneNumber: user.phoneNumber,
+              role: user.role,
+            },
+            accessToken: newAccessToken,
+            refreshToken: newRefreshToken,
+          };
+        }
+      }
+
       const user = await authRepository.findUserById(tokenRecord.userId);
       
       // Revoke ALL sessions immediately
@@ -977,7 +1069,8 @@ class AuthService {
       refreshExpiresAt,
       ipAddress,
       userAgent,
-      currentFingerprintHash
+      currentFingerprintHash,
+      newToken.sessionId
     );
 
     const newAccessToken = generateAccessToken({
@@ -986,11 +1079,13 @@ class AuthService {
       email: user.email,
       role: user.role,
       tokenId: newToken.id,
+      sessionId: newToken.sessionId,
     });
 
     const newRefreshToken = generateRefreshToken({
       userId: user.id,
       tokenId: newToken.id,
+      sessionId: newToken.sessionId,
     });
 
     return {
@@ -1049,6 +1144,7 @@ class AuthService {
     ipAddress?: string,
     userAgent?: string,
     deviceFingerprint?: string,
+    sessionId?: string | null,
   ): Promise<LoginResult> {
     const authenticatedUser: AuthenticatedUser = {
       id: user.id,
@@ -1066,7 +1162,8 @@ class AuthService {
       refreshExpiresAt,
       ipAddress,
       userAgent,
-      fingerprintHash
+      fingerprintHash,
+      sessionId
     );
 
     // Cache the session in the Pluggable Session Store (Redis write-through)
@@ -1076,7 +1173,8 @@ class AuthService {
       refreshExpiresAt,
       ipAddress,
       userAgent,
-      fingerprintHash
+      fingerprintHash,
+      dbToken.sessionId
     );
 
     const accessToken = generateAccessToken({
@@ -1085,18 +1183,22 @@ class AuthService {
       email: user.email,
       role: user.role,
       tokenId: dbToken.id,
+      sessionId: dbToken.sessionId,
     });
 
     const refreshToken = generateRefreshToken({
       userId: user.id,
       tokenId: dbToken.id,
+      sessionId: dbToken.sessionId,
     });
 
-    await auditService.log({
-      userId: user.id,
-      action: "NEW_SESSION_CREATED",
-      metadata: { tokenId: dbToken.id },
-    });
+    if (!sessionId) {
+      await auditService.log({
+        userId: user.id,
+        action: "NEW_SESSION_CREATED",
+        metadata: { tokenId: dbToken.id, sessionId: dbToken.sessionId },
+      });
+    }
 
     return {
       user: authenticatedUser,

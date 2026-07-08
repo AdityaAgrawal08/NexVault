@@ -32,8 +32,18 @@ export async function initializeDatabase() {
       ADD COLUMN IF NOT EXISTS ip_address VARCHAR(45) DEFAULT NULL,
       ADD COLUMN IF NOT EXISTS user_agent TEXT DEFAULT NULL,
       ADD COLUMN IF NOT EXISTS device_fingerprint VARCHAR(64) DEFAULT NULL,
-      ADD COLUMN IF NOT EXISTS revocation_reason VARCHAR(50) DEFAULT NULL;
+      ADD COLUMN IF NOT EXISTS revocation_reason VARCHAR(50) DEFAULT NULL,
+      ADD COLUMN IF NOT EXISTS session_id UUID DEFAULT gen_random_uuid(),
+      ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP WITH TIME ZONE DEFAULT NULL;
     `);
+
+    // Backfill session_id with id for existing tokens where it's null
+    await db.query(`
+      UPDATE refresh_tokens
+      SET session_id = id
+      WHERE session_id IS NULL;
+    `);
+
 
     // 4. Create or recreate the otps table to support hashing, purpose, and attempts
     await db.query(`
@@ -147,6 +157,9 @@ export async function initializeDatabase() {
     `);
     await db.query(`
       CREATE INDEX IF NOT EXISTS idx_refresh_tokens_token_hash ON refresh_tokens(token_hash);
+    `);
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS idx_refresh_tokens_session_id ON refresh_tokens(session_id);
     `);
     await db.query(`
       CREATE INDEX IF NOT EXISTS idx_otps_email_purpose ON otps(email, purpose);

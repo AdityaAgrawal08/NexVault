@@ -187,7 +187,7 @@ class AuthController {
     }
     const { identifier, password, force } = result.data;
 
-    const ip = req.ip || req.socket.remoteAddress || undefined;
+    const ip = authService.getClientIp(req);
     const ua = req.headers["user-agent"] || undefined;
     const fingerprint = req.headers["x-device-fingerprint"] as string | undefined;
 
@@ -264,7 +264,7 @@ class AuthController {
     }
     const { provider, token } = result.data;
 
-    const ip = req.ip || req.socket.remoteAddress || undefined;
+    const ip = authService.getClientIp(req);
     const ua = req.headers["user-agent"] || undefined;
     const fingerprint = req.headers["x-device-fingerprint"] as string | undefined;
 
@@ -303,7 +303,7 @@ class AuthController {
       });
     }
 
-    const ip = req.ip || req.socket.remoteAddress || undefined;
+    const ip = authService.getClientIp(req);
     const ua = req.headers["user-agent"] || undefined;
     const fingerprint = req.headers["x-device-fingerprint"] as string | undefined;
 

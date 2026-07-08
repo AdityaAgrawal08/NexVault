@@ -8,11 +8,13 @@ export interface AccessTokenPayload {
   email: string;
   role: string;
   tokenId: string;
+  sessionId?: string;
 }
 
 export interface RefreshTokenPayload {
   userId: string;
   tokenId: string; // unique ID to track and rotate/revoke this specific refresh token
+  sessionId?: string;
 }
 
 export function generateAccessToken(payload: AccessTokenPayload): string {

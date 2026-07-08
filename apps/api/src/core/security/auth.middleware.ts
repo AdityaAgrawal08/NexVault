@@ -67,7 +67,7 @@ export async function authMiddleware(
       }));
     }
 
-    const ip = (req.headers["x-simulated-ip"] as string) || req.ip || req.socket.remoteAddress || "unknown";
+    const ip = authService.getClientIp(req);
 
     // 3. Verify Device Fingerprint signature binding to prevent Session Hijacking
     const currentFingerprint = authService.getDeviceFingerprintHash(
